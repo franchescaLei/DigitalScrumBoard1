@@ -1,5 +1,6 @@
-using DigitalScrumBoard1.Data;
+﻿using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Data.Seed;
+using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
@@ -62,10 +63,16 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
-builder.Services.Configure<DigitalScrumBoard1.Services.EmailOptions>(
-    builder.Configuration.GetSection("Email"));
+// Email options + sender
+builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
-builder.Services.AddScoped<DigitalScrumBoard1.Services.IEmailSender, DigitalScrumBoard1.Services.SmtpEmailSender>();
+// ✅ New services (refactor)
+builder.Services.AddScoped<IAuditService, AuditService>();
+builder.Services.AddScoped<IAuthEmailService, AuthEmailService>();
+builder.Services.AddScoped<IUserManagementService, UserManagementService>();
+builder.Services.AddScoped<ITeamService, TeamService>();
+builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 
 var app = builder.Build();
 
@@ -150,7 +157,6 @@ app.Use(async (context, next) =>
 
     await next();
 });
-
 
 app.UseAuthorization();
 app.MapControllers();

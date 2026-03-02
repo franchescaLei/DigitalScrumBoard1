@@ -1,6 +1,6 @@
-﻿using DigitalScrumBoard1.Data;
+﻿using System.Security.Claims;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
-using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authentication;
@@ -8,8 +8,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
-using Microsoft.Extensions.Options;
 
 namespace DigitalScrumBoard1.Controllers
 {
@@ -17,23 +15,18 @@ namespace DigitalScrumBoard1.Controllers
     [Route("api/auth")]
     public sealed class AuthController : ControllerBase
     {
-
-        private readonly IEmailSender _emailSender;
-        private readonly EmailOptions _emailOptions;
         private readonly DigitalScrumBoardContext _db;
+        private readonly IAuditService _audit;
+        private readonly IAuthEmailService _authEmail;
 
-        // FR-005 "defined number" (adjust anytime)
         private const int MaxConsecutiveFailedAttempts = 5;
         private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
 
-        public AuthController(
-                DigitalScrumBoardContext db,
-                IEmailSender emailSender,
-                IOptions<EmailOptions> emailOptions)
+        public AuthController(DigitalScrumBoardContext db, IAuditService audit, IAuthEmailService authEmail)
         {
             _db = db;
-            _emailSender = emailSender;
-            _emailOptions = emailOptions.Value;
+            _audit = audit;
+            _authEmail = authEmail;
         }
 
         [HttpPost("login")]
@@ -47,28 +40,24 @@ namespace DigitalScrumBoard1.Controllers
             var email = req.EmailAddress.Trim().ToLowerInvariant();
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
-            // Load role for claims and response
             var user = await _db.Users
                 .Include(u => u.Role)
                 .AsTracking()
                 .SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
 
-            // Avoid user enumeration: same response for unknown email or bad password.
             if (user is null)
                 return Unauthorized(new { message = "Invalid credentials." });
 
             if (user.Disabled)
             {
-                await WriteAuditAsync(user.UserID, ip, action: "LOGIN", success: false, details: "Account disabled.");
-                await _db.SaveChangesAsync(ct);
+                await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Account disabled.", ip, ct);
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
             }
 
             var lockout = await GetLockoutInfoAsync(user.UserID, ct);
             if (lockout.IsLocked)
             {
-                await WriteAuditAsync(user.UserID, ip, action: "LOGIN", success: false, details: "Account locked out.");
-                await _db.SaveChangesAsync(ct);
+                await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Account locked out.", ip, ct);
 
                 return StatusCode(StatusCodes.Status423Locked, new
                 {
@@ -80,12 +69,10 @@ namespace DigitalScrumBoard1.Controllers
             var passwordOk = PasswordHasher.Verify(req.Password, user.PasswordHash);
             if (!passwordOk)
             {
-                await WriteAuditAsync(user.UserID, ip, action: "LOGIN", success: false, details: "Invalid credentials.");
-                await _db.SaveChangesAsync(ct);
+                await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Invalid credentials.", ip, ct);
                 return Unauthorized(new { message = "Invalid credentials." });
             }
 
-            // Success: build claims and issue cookie
             var claims = new List<Claim>
             {
                 new(ClaimTypes.NameIdentifier, user.UserID.ToString()),
@@ -107,9 +94,9 @@ namespace DigitalScrumBoard1.Controllers
 
             user.LastLogin = DateTime.UtcNow;
             user.UpdatedAt = DateTime.UtcNow;
-
-            await WriteAuditAsync(user.UserID, ip, action: "LOGIN", success: true, details: "Login success.");
             await _db.SaveChangesAsync(ct);
+
+            await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, true, "Login success.", ip, ct);
 
             return Ok(new
             {
@@ -138,10 +125,7 @@ namespace DigitalScrumBoard1.Controllers
             await HttpContext.SignOutAsync("MyCookieAuth");
 
             if (userId is not null)
-            {
-                await WriteAuditAsync(userId.Value, ip, action: "LOGOUT", success: true, details: "Logout.");
-                await _db.SaveChangesAsync(ct);
-            }
+                await _audit.LogAsync(userId.Value, "LOGOUT", "User", userId.Value, true, "Logout.", ip, ct);
 
             return Ok(new { message = "Logged out." });
         }
@@ -173,57 +157,6 @@ namespace DigitalScrumBoard1.Controllers
             });
         }
 
-        private int? GetUserId()
-        {
-            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return int.TryParse(id, out var parsed) ? parsed : null;
-        }
-
-        private async Task<(bool IsLocked, TimeSpan RetryAfter)> GetLockoutInfoAsync(int userId, CancellationToken ct)
-        {
-            // Consecutive = last N LOGIN attempts are failures
-            var recentAttempts = await _db.AuditLogs
-                .AsNoTracking()
-                .Where(a => a.UserID == userId && a.Action == "LOGIN")
-                .OrderByDescending(a => a.Timestamp)
-                .Select(a => new { a.Success, a.Timestamp })
-                .Take(MaxConsecutiveFailedAttempts)
-                .ToListAsync(ct);
-
-            if (recentAttempts.Count < MaxConsecutiveFailedAttempts)
-                return (false, TimeSpan.Zero);
-
-            if (recentAttempts.Any(a => a.Success))
-                return (false, TimeSpan.Zero);
-
-            var latest = recentAttempts[0].Timestamp;
-            var until = latest.Add(LockoutDuration);
-            var now = DateTime.UtcNow;
-
-            if (now >= until)
-                return (false, TimeSpan.Zero);
-
-            return (true, until - now);
-        }
-
-        private Task WriteAuditAsync(int userId, string ip, string action, bool success, string details)
-        {
-            _db.AuditLogs.Add(new AuditLog
-            {
-                UserID = userId,
-                Action = action,
-                IPAddress = ip,
-                Timestamp = DateTime.UtcNow,
-                Success = success,
-                Details = details,
-                TargetType = "User",
-                TargetID = userId
-            });
-
-            // caller does SaveChanges
-            return Task.CompletedTask;
-        }
-
         [HttpPost("change-password")]
         [Authorize(AuthenticationSchemes = "MyCookieAuth")]
         public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequestDto req, CancellationToken ct)
@@ -242,7 +175,6 @@ namespace DigitalScrumBoard1.Controllers
             if (user.Disabled)
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
 
-            // ✅ ADD THIS HERE (before hashing)
             if (!PasswordPolicy.IsValid(req.NewPassword))
             {
                 return BadRequest(new
@@ -256,13 +188,13 @@ namespace DigitalScrumBoard1.Controllers
             user.MustChangePassword = false;
             user.UpdatedAt = DateTime.UtcNow;
 
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await WriteAuditAsync(user.UserID, ip, action: "CHANGE_PASSWORD", success: true, details: "Password changed.");
             await _db.SaveChangesAsync(ct);
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(user.UserID, "CHANGE_PASSWORD", "User", user.UserID, true, "Password changed.", ip, ct);
 
             return Ok(new { message = "Password updated." });
         }
-
 
         [HttpGet("verify-email")]
         [AllowAnonymous]
@@ -271,7 +203,7 @@ namespace DigitalScrumBoard1.Controllers
             if (string.IsNullOrWhiteSpace(token))
                 return BadRequest(new { message = "Token is required." });
 
-            var tokenHash = DigitalScrumBoard1.Security.EmailVerificationTokenFactory.HashToken(token);
+            var tokenHash = EmailVerificationTokenFactory.HashToken(token);
 
             var row = await _db.EmailVerificationTokens
                 .Include(t => t.User)
@@ -293,16 +225,17 @@ namespace DigitalScrumBoard1.Controllers
             row.User.EmailVerified = true;
             row.User.UpdatedAt = DateTime.UtcNow;
 
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await WriteAuditAsync(row.User.UserID, ip, action: "VERIFY_EMAIL", success: true, details: "Email verified.");
             await _db.SaveChangesAsync(ct);
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(row.User.UserID, "VERIFY_EMAIL", "User", row.User.UserID, true, "Email verified.", ip, ct);
 
             return Ok(new { message = "Email verified successfully." });
         }
 
         [HttpPost("resend-verification")]
         [Authorize(AuthenticationSchemes = "MyCookieAuth")]
-        [EnableRateLimiting("LoginLimiter")] // reuse limiter or create a new one
+        [EnableRateLimiting("LoginLimiter")]
         public async Task<IActionResult> ResendVerification(CancellationToken ct)
         {
             var userId = GetUserId();
@@ -316,102 +249,40 @@ namespace DigitalScrumBoard1.Controllers
             if (user.EmailVerified)
                 return Ok(new { message = "Email is already verified." });
 
-            // Create new token
-            var rawToken = EmailVerificationTokenFactory.CreateRawToken();
-            var tokenHash = EmailVerificationTokenFactory.HashToken(rawToken);
-
-            _db.EmailVerificationTokens.Add(new EmailVerificationToken
-            {
-                UserID = user.UserID,
-                TokenHash = tokenHash,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddHours(24),
-                UsedAt = null
-            });
-
-            var baseUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
-            var link = $"{baseUrl}/api/auth/verify-email?token={Uri.EscapeDataString(rawToken)}";
-
-            await _emailSender.SendAsync(
-                user.EmailAddress,
-                "Verify your email",
-                $"<p>Please verify your email by clicking:</p><p><a href=\"{link}\">Verify Email</a></p>",
-                ct
-            );
+            await _authEmail.SendVerificationAsync(user, ct);
 
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await WriteAuditAsync(user.UserID, ip, action: "SEND_VERIFY_EMAIL", success: true, details: "Resent verification email.");
-            await _db.SaveChangesAsync(ct);
+            await _audit.LogAsync(user.UserID, "SEND_VERIFY_EMAIL", "User", user.UserID, true, "Resent verification email.", ip, ct);
 
             return Ok(new { message = "Verification email sent." });
         }
 
         [HttpPost("forgot-password")]
         [AllowAnonymous]
-        [EnableRateLimiting("LoginLimiter")] // minimal: reuse existing limiter
+        [EnableRateLimiting("LoginLimiter")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequestDto req, CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return ValidationProblem(ModelState);
 
             var email = req.EmailAddress.Trim().ToLowerInvariant();
-
-            // Always respond OK to prevent email enumeration
             var genericResponse = Ok(new { message = "If the email exists, a password reset link will be sent." });
 
-            var user = await _db.Users
-                .AsTracking()
-                .SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
-
-            if (user is null)
+            var user = await _db.Users.AsTracking().SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
+            if (user is null || user.Disabled)
                 return genericResponse;
 
-            if (user.Disabled)
-                return genericResponse;
-
-            // Create token
-            var rawToken = EmailVerificationTokenFactory.CreateRawToken();
-            var tokenHash = EmailVerificationTokenFactory.HashToken(rawToken);
-
-            _db.PasswordResetTokens.Add(new PasswordResetToken
-            {
-                UserID = user.UserID,
-                TokenHash = tokenHash,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(30),
-                UsedAt = null
-            });
-
-            // ✅ IMPORTANT: Save FIRST so emailed token always exists in DB
-            await _db.SaveChangesAsync(ct);
-
-            var resetBase = (_emailOptions.FrontendBaseUrl ?? "").TrimEnd('/');
-            var resetLink = $"{resetBase}/reset-password?token={Uri.EscapeDataString(rawToken)}";
-
-            await _emailSender.SendAsync(
-                user.EmailAddress,
-                "Reset your password",
-                $"""
-        <p>We received a request to reset your password.</p>
-        <p>Click the link below to set a new password (expires in 30 minutes):</p>
-        <p><a href="{resetLink}">Reset Password</a></p>
-        <p>If you did not request this, you may ignore this email.</p>
-        """,
-                ct
-            );
+            await _authEmail.SendPasswordResetAsync(user, ct);
 
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await WriteAuditAsync(user.UserID, ip, action: "FORGOT_PASSWORD", success: true, details: "Password reset email sent.");
-
-            // Save audit log entry
-            await _db.SaveChangesAsync(ct);
+            await _audit.LogAsync(user.UserID, "FORGOT_PASSWORD", "User", user.UserID, true, "Password reset email sent.", ip, ct);
 
             return genericResponse;
         }
 
         [HttpPost("reset-password")]
         [AllowAnonymous]
-        [EnableRateLimiting("LoginLimiter")] // minimal: reuse existing limiter
+        [EnableRateLimiting("LoginLimiter")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequestDto req, CancellationToken ct)
         {
             if (!ModelState.IsValid)
@@ -441,20 +312,50 @@ namespace DigitalScrumBoard1.Controllers
             if (row.User.Disabled)
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
 
-            // Update password
+            // (kept same flow; if you also want policy here, add PasswordPolicy check)
             row.User.PasswordHash = PasswordHasher.Hash(req.NewPassword);
             row.User.MustChangePassword = false;
             row.User.UpdatedAt = DateTime.UtcNow;
-
-            // Mark token used
             row.UsedAt = DateTime.UtcNow;
-
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await WriteAuditAsync(row.User.UserID, ip, action: "RESET_PASSWORD", success: true, details: "Password reset successful.");
 
             await _db.SaveChangesAsync(ct);
 
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(row.User.UserID, "RESET_PASSWORD", "User", row.User.UserID, true, "Password reset successful.", ip, ct);
+
             return Ok(new { message = "Password has been reset successfully." });
+        }
+
+        private int? GetUserId()
+        {
+            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(id, out var parsed) ? parsed : null;
+        }
+
+        private async Task<(bool IsLocked, TimeSpan RetryAfter)> GetLockoutInfoAsync(int userId, CancellationToken ct)
+        {
+            var recentAttempts = await _db.AuditLogs
+                .AsNoTracking()
+                .Where(a => a.UserID == userId && a.Action == "LOGIN")
+                .OrderByDescending(a => a.Timestamp)
+                .Select(a => new { a.Success, a.Timestamp })
+                .Take(MaxConsecutiveFailedAttempts)
+                .ToListAsync(ct);
+
+            if (recentAttempts.Count < MaxConsecutiveFailedAttempts)
+                return (false, TimeSpan.Zero);
+
+            if (recentAttempts.Any(a => a.Success))
+                return (false, TimeSpan.Zero);
+
+            var latest = recentAttempts[0].Timestamp;
+            var until = latest.Add(LockoutDuration);
+            var now = DateTime.UtcNow;
+
+            if (now >= until)
+                return (false, TimeSpan.Zero);
+
+            return (true, until - now);
         }
     }
 }

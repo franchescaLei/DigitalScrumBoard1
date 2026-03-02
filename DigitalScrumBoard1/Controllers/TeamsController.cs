@@ -1,9 +1,7 @@
-﻿using DigitalScrumBoard1.Data;
-using DigitalScrumBoard1.Dtos;
-using DigitalScrumBoard1.Models;
+﻿using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace DigitalScrumBoard1.Controllers
@@ -13,79 +11,41 @@ namespace DigitalScrumBoard1.Controllers
     [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator")]
     public sealed class TeamsController : ControllerBase
     {
-        private readonly DigitalScrumBoardContext _db;
+        private readonly ITeamService _teams;
 
-        public TeamsController(DigitalScrumBoardContext db)
+        public TeamsController(ITeamService teams)
         {
-            _db = db;
+            _teams = teams;
         }
 
-        // POST /api/teams
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateTeamRequestDto req, CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return ValidationProblem(ModelState);
 
-            var name = req.TeamName.Trim();
+            var actorId = GetActorUserId() ?? 0;
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
-            // Prevent duplicates (case-insensitive)
-            var exists = await _db.Teams
-                .AsNoTracking()
-                .AnyAsync(t => t.TeamName.ToLower() == name.ToLower(), ct);
-
-            if (exists)
-                return Conflict(new { message = "Team name already exists." });
-
-            var now = DateTime.UtcNow;
-
-            var team = new Team
+            try
             {
-                TeamName = name,
-                Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
-                IsActive = true,
-                CreatedAt = now
-            };
-
-            _db.Teams.Add(team);
-            await _db.SaveChangesAsync(ct);
-
-            await WriteAuditAsync(
-                actorUserId: GetActorUserId() ?? 0,
-                action: "CREATE_TEAM",
-                targetId: team.TeamID,
-                success: true,
-                details: $"Created team {team.TeamName}",
-                ct: ct
-            );
-
-            return CreatedAtAction(nameof(GetById), new { id = team.TeamID }, new
+                var created = await _teams.CreateTeamAsync(req, actorId, ip, ct);
+                var teamId = (int)created.GetType().GetProperty("TeamID")!.GetValue(created)!;
+                return CreatedAtAction(nameof(GetById), new { id = teamId }, created);
+            }
+            catch (InvalidOperationException ex)
             {
-                team.TeamID,
-                team.TeamName,
-                team.Description,
-                team.IsActive,
-                team.CreatedAt
-            });
+                if (ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                    return Conflict(new { message = ex.Message });
+
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
-        // Optional but useful for testing: GET /api/teams/{id}
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById([FromRoute] int id, CancellationToken ct)
         {
-            var team = await _db.Teams
-                .AsNoTracking()
-                .Where(t => t.TeamID == id)
-                .Select(t => new
-                {
-                    t.TeamID,
-                    t.TeamName,
-                    t.Description,
-                    t.IsActive,
-                    t.CreatedAt
-                })
-                .SingleOrDefaultAsync(ct);
-
+            var team = await _teams.GetTeamByIdAsync(id, ct);
             return team is null ? NotFound(new { message = "Team not found." }) : Ok(team);
         }
 
@@ -93,25 +53,6 @@ namespace DigitalScrumBoard1.Controllers
         {
             var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return int.TryParse(id, out var parsed) ? parsed : null;
-        }
-
-        private async Task WriteAuditAsync(int actorUserId, string action, int targetId, bool success, string details, CancellationToken ct)
-        {
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-
-            _db.AuditLogs.Add(new AuditLog
-            {
-                UserID = actorUserId,
-                Action = action,
-                IPAddress = ip,
-                Timestamp = DateTime.UtcNow,
-                Success = success,
-                Details = details,
-                TargetType = "Team",
-                TargetID = targetId
-            });
-
-            await _db.SaveChangesAsync(ct);
         }
     }
 }
