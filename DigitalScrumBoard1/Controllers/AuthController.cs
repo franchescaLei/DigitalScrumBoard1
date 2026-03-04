@@ -357,5 +357,38 @@ namespace DigitalScrumBoard1.Controllers
 
             return (true, until - now);
         }
+
+        [HttpPost("unlock/{userId:int}")]
+        [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator")]
+        public async Task<IActionResult> UnlockAccount([FromRoute] int userId, CancellationToken ct)
+        {
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var adminId = GetUserId();
+
+            // Ensure target user exists (include disabled users too if you use query filters)
+            var userExists = await _db.Users
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(u => u.UserID == userId, ct);
+
+            if (!userExists)
+                return NotFound(new { message = "User not found." });
+
+            // ✅ Minimal unlock mechanism: add a successful LOGIN audit to break consecutive failures
+            await _audit.LogAsync(
+                userId,
+                "LOGIN",
+                "User",
+                userId,
+                true,
+                adminId is null
+                    ? "Account unlocked by admin."
+                    : $"Account unlocked by admin (AdminUserID={adminId.Value}).",
+                ip,
+                ct
+            );
+
+            return Ok(new { message = "Account unlocked." });
+        }
     }
 }

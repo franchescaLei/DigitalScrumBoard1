@@ -4,6 +4,7 @@ using DigitalScrumBoard1.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DigitalScrumBoard1.Migrations
 {
     [DbContext(typeof(DigitalScrumBoardContext))]
-    partial class DigitalScrumBoardContextModelSnapshot : ModelSnapshot
+    [Migration("20260304012936_TeamIDNOtRequiredWorkItem")]
+    partial class TeamIDNOtRequiredWorkItem
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

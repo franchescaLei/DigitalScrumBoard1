@@ -329,7 +329,8 @@ public partial class DigitalScrumBoardContext : DbContext
             e.HasOne(x => x.Team)
                 .WithMany()
                 .HasForeignKey(x => x.TeamID)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.Restrict)
+                .IsRequired(false);
 
             e.HasOne(x => x.Sprint)
                 .WithMany()

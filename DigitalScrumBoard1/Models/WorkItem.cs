@@ -30,8 +30,8 @@
         public int? SprintID { get; set; }
         public Sprint? Sprint { get; set; }
 
-        public int TeamID { get; set; }
-        public Team Team { get; set; } = null!;
+        public int? TeamID { get; set; }
+        public Team? Team { get; set; }
 
         public bool IsDeleted { get; set; }
         public DateTime? DeletedAt { get; set; }

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 using System.Reflection;
 using System.Threading.RateLimiting;
+using DigitalScrumBoard1.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,7 +28,7 @@ builder.Services.AddAuthentication("MyCookieAuth")
         options.Cookie.Name = "DigitalScrumBoardAuth";
         options.Cookie.HttpOnly = true;
         options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SameSite = SameSiteMode.None;
         options.Cookie.IsEssential = true;
 
         options.LoginPath = "/api/auth/login";
@@ -54,6 +55,32 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
+    options.OnRejected = async (context, ct) =>
+    {
+        // Ensure status code
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/json";
+
+        // Try to extract retry-after from limiter metadata (if available)
+        int retryAfterSeconds = 60; // fallback to your window
+
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) &&
+            retryAfter > TimeSpan.Zero)
+        {
+            retryAfterSeconds = (int)Math.Ceiling(retryAfter.TotalSeconds);
+
+            // Helpful for clients / browsers
+            context.HttpContext.Response.Headers.RetryAfter = retryAfterSeconds.ToString();
+        }
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            message = "Too many requests. Please try again later.",
+            code = "RATE_LIMITED",
+            retryAfterSeconds
+        }, cancellationToken: ct);
+    };
+
     options.AddFixedWindowLimiter("LoginLimiter", limiter =>
     {
         limiter.PermitLimit = 5;
@@ -61,6 +88,16 @@ builder.Services.AddRateLimiter(options =>
         limiter.QueueLimit = 2;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
+});
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("DSB", policy =>
+        policy.WithOrigins("https://localhost:7120")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials()
+    );
 });
 
 // Email options + sender
@@ -73,6 +110,7 @@ builder.Services.AddScoped<IAuthEmailService, AuthEmailService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<ITeamService, TeamService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+builder.Services.AddScoped<IWorkItemRepository, WorkItemRepository>();
 
 var app = builder.Build();
 
@@ -84,6 +122,12 @@ if (app.Environment.IsDevelopment())
 
 app.UseRateLimiter();
 app.UseHttpsRedirection();
+
+app.UseRouting();
+
+// ✅ Apply CORS policy to the pipeline
+app.UseCors("DSB");
+
 app.UseAuthentication();
 
 app.Use(async (context, next) =>
@@ -159,6 +203,7 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthorization();
+
 app.MapControllers();
 
 using (var scope = app.Services.CreateScope())
