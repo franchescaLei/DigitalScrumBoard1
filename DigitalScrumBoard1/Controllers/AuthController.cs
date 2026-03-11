@@ -1,6 +1,6 @@
-﻿using System.Security.Claims;
-using DigitalScrumBoard1.Data;
-using DigitalScrumBoard1.Dtos;
+﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.DTOs.Authentication;
+using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authentication;
@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace DigitalScrumBoard1.Controllers
 {
@@ -19,8 +20,14 @@ namespace DigitalScrumBoard1.Controllers
         private readonly IAuditService _audit;
         private readonly IAuthEmailService _authEmail;
 
-        private const int MaxConsecutiveFailedAttempts = 5;
-        private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
+        private const int RateLimitStartsAtFailedAttempt = 5;
+        private const int AccountLockoutFailedAttempt = 8;
+
+        private static readonly TimeSpan FirstCooldownDuration = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan CooldownStepDuration = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan LockoutDuration = TimeSpan.FromHours(24);
+
+        private static readonly TimeSpan PasswordResetCodeLifetime = TimeSpan.FromMinutes(5);
 
         public AuthController(DigitalScrumBoardContext db, IAuditService audit, IAuthEmailService authEmail)
         {
@@ -51,18 +58,41 @@ namespace DigitalScrumBoard1.Controllers
             if (user.Disabled)
             {
                 await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Account disabled.", ip, ct);
-                return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
+
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    message = "Account is disabled.",
+                    code = "ACCOUNT_DISABLED"
+                });
             }
 
-            var lockout = await GetLockoutInfoAsync(user.UserID, ct);
-            if (lockout.IsLocked)
+            var authState = await GetAuthAttemptStateAsync(user.UserID, ct);
+
+            if (authState.IsLocked)
             {
+                var retryAfterSeconds = (int)Math.Ceiling(authState.RetryAfter.TotalSeconds);
+                Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
+
                 await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Account locked out.", ip, ct);
 
                 return StatusCode(StatusCodes.Status423Locked, new
                 {
                     message = "Account locked due to multiple failed login attempts.",
-                    retryAfterSeconds = (int)Math.Ceiling(lockout.RetryAfter.TotalSeconds)
+                    code = "ACCOUNT_LOCKED",
+                    retryAfterSeconds
+                });
+            }
+
+            if (authState.IsRateLimited)
+            {
+                var retryAfterSeconds = (int)Math.Ceiling(authState.RetryAfter.TotalSeconds);
+                Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
+
+                return StatusCode(StatusCodes.Status429TooManyRequests, new
+                {
+                    message = "Too many failed login attempts. Please try again later.",
+                    code = "AUTH_RATE_LIMITED",
+                    retryAfterSeconds
                 });
             }
 
@@ -70,6 +100,35 @@ namespace DigitalScrumBoard1.Controllers
             if (!passwordOk)
             {
                 await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Invalid credentials.", ip, ct);
+
+                var updatedAuthState = await GetAuthAttemptStateAsync(user.UserID, ct);
+
+                if (updatedAuthState.IsLocked)
+                {
+                    var retryAfterSeconds = (int)Math.Ceiling(updatedAuthState.RetryAfter.TotalSeconds);
+                    Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
+
+                    return StatusCode(StatusCodes.Status423Locked, new
+                    {
+                        message = "Account locked due to multiple failed login attempts.",
+                        code = "ACCOUNT_LOCKED",
+                        retryAfterSeconds
+                    });
+                }
+
+                if (updatedAuthState.IsRateLimited)
+                {
+                    var retryAfterSeconds = (int)Math.Ceiling(updatedAuthState.RetryAfter.TotalSeconds);
+                    Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
+
+                    return StatusCode(StatusCodes.Status429TooManyRequests, new
+                    {
+                        message = "Too many failed login attempts. Please try again later.",
+                        code = "AUTH_RATE_LIMITED",
+                        retryAfterSeconds
+                    });
+                }
+
                 return Unauthorized(new { message = "Invalid credentials." });
             }
 
@@ -266,18 +325,85 @@ namespace DigitalScrumBoard1.Controllers
                 return ValidationProblem(ModelState);
 
             var email = req.EmailAddress.Trim().ToLowerInvariant();
-            var genericResponse = Ok(new { message = "If the email exists, a password reset link will be sent." });
+            var now = DateTime.UtcNow;
 
-            var user = await _db.Users.AsTracking().SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
+            var genericResponse = Ok(new
+            {
+                message = "If the email exists, a password reset code will be sent.",
+                codeExpiresInSeconds = (int)PasswordResetCodeLifetime.TotalSeconds
+            });
+
+            var user = await _db.Users
+                .AsTracking()
+                .SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
+
             if (user is null || user.Disabled)
                 return genericResponse;
 
-            await _authEmail.SendPasswordResetAsync(user, ct);
+            var rawCode = EmailVerificationTokenFactory.CreateSixDigitCode();
+            var tokenHash = EmailVerificationTokenFactory.HashToken(rawCode);
+
+            var tokenRow = new PasswordResetToken
+            {
+                UserID = user.UserID,
+                TokenHash = tokenHash,
+                CreatedAt = now,
+                ExpiresAt = now.Add(PasswordResetCodeLifetime),
+                UsedAt = null
+            };
+
+            _db.PasswordResetTokens.Add(tokenRow);
+            await _db.SaveChangesAsync(ct);
+
+            await _authEmail.SendPasswordResetCodeAsync(user, rawCode, (int)PasswordResetCodeLifetime.TotalSeconds, ct);
 
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await _audit.LogAsync(user.UserID, "FORGOT_PASSWORD", "User", user.UserID, true, "Password reset email sent.", ip, ct);
+            await _audit.LogAsync(user.UserID, "FORGOT_PASSWORD", "User", user.UserID, true, "Password reset code sent.", ip, ct);
 
             return genericResponse;
+        }
+
+        [HttpPost("verify-reset-code")]
+        [AllowAnonymous]
+        [EnableRateLimiting("LoginLimiter")]
+        public async Task<IActionResult> VerifyResetCode([FromBody] VerifyResetCodeRequestDto req, CancellationToken ct)
+        {
+            if (!ModelState.IsValid)
+                return ValidationProblem(ModelState);
+
+            var email = req.EmailAddress.Trim().ToLowerInvariant();
+            var tokenHash = EmailVerificationTokenFactory.HashToken(req.Token);
+
+            var row = await _db.PasswordResetTokens
+                .Include(t => t.User)
+                .AsNoTracking()
+                .Where(t =>
+                    t.TokenHash == tokenHash &&
+                    t.User.EmailAddress.ToLower() == email)
+                .OrderByDescending(t => t.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+                return BadRequest(new { message = "Invalid code." });
+
+            if (row.UsedAt is not null)
+                return BadRequest(new { message = "Code already used." });
+
+            if (DateTime.UtcNow > row.ExpiresAt)
+                return BadRequest(new
+                {
+                    message = "Code expired.",
+                    code = "RESET_CODE_EXPIRED"
+                });
+
+            if (row.User.Disabled)
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
+
+            return Ok(new
+            {
+                message = "Code verified.",
+                expiresInSeconds = (int)Math.Max(0, Math.Ceiling((row.ExpiresAt - DateTime.UtcNow).TotalSeconds))
+            });
         }
 
         [HttpPost("reset-password")]
@@ -289,30 +415,45 @@ namespace DigitalScrumBoard1.Controllers
                 return ValidationProblem(ModelState);
 
             if (string.IsNullOrWhiteSpace(req.Token))
-                return BadRequest(new { message = "Token is required." });
+                return BadRequest(new { message = "Code is required." });
 
+            var email = req.EmailAddress.Trim().ToLowerInvariant();
             var tokenHash = EmailVerificationTokenFactory.HashToken(req.Token);
 
             var row = await _db.PasswordResetTokens
                 .Include(t => t.User)
                 .AsTracking()
-                .Where(t => t.TokenHash == tokenHash)
+                .Where(t =>
+                    t.TokenHash == tokenHash &&
+                    t.User.EmailAddress.ToLower() == email)
                 .OrderByDescending(t => t.CreatedAt)
                 .FirstOrDefaultAsync(ct);
 
             if (row is null)
-                return BadRequest(new { message = "Invalid token." });
+                return BadRequest(new { message = "Invalid code." });
 
             if (row.UsedAt is not null)
-                return BadRequest(new { message = "Token already used." });
+                return BadRequest(new { message = "Code already used." });
 
             if (DateTime.UtcNow > row.ExpiresAt)
-                return BadRequest(new { message = "Token expired." });
+                return BadRequest(new
+                {
+                    message = "Code expired.",
+                    code = "RESET_CODE_EXPIRED"
+                });
 
             if (row.User.Disabled)
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
 
-            // (kept same flow; if you also want policy here, add PasswordPolicy check)
+            if (!PasswordPolicy.IsValid(req.NewPassword))
+            {
+                return BadRequest(new
+                {
+                    message = "Password does not meet requirements.",
+                    requirements = "At least 8 characters, with uppercase, lowercase, number, and symbol."
+                });
+            }
+
             row.User.PasswordHash = PasswordHasher.Hash(req.NewPassword);
             row.User.MustChangePassword = false;
             row.User.UpdatedAt = DateTime.UtcNow;
@@ -326,38 +467,6 @@ namespace DigitalScrumBoard1.Controllers
             return Ok(new { message = "Password has been reset successfully." });
         }
 
-        private int? GetUserId()
-        {
-            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return int.TryParse(id, out var parsed) ? parsed : null;
-        }
-
-        private async Task<(bool IsLocked, TimeSpan RetryAfter)> GetLockoutInfoAsync(int userId, CancellationToken ct)
-        {
-            var recentAttempts = await _db.AuditLogs
-                .AsNoTracking()
-                .Where(a => a.UserID == userId && a.Action == "LOGIN")
-                .OrderByDescending(a => a.Timestamp)
-                .Select(a => new { a.Success, a.Timestamp })
-                .Take(MaxConsecutiveFailedAttempts)
-                .ToListAsync(ct);
-
-            if (recentAttempts.Count < MaxConsecutiveFailedAttempts)
-                return (false, TimeSpan.Zero);
-
-            if (recentAttempts.Any(a => a.Success))
-                return (false, TimeSpan.Zero);
-
-            var latest = recentAttempts[0].Timestamp;
-            var until = latest.Add(LockoutDuration);
-            var now = DateTime.UtcNow;
-
-            if (now >= until)
-                return (false, TimeSpan.Zero);
-
-            return (true, until - now);
-        }
-
         [HttpPost("unlock/{userId:int}")]
         [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator")]
         public async Task<IActionResult> UnlockAccount([FromRoute] int userId, CancellationToken ct)
@@ -365,7 +474,6 @@ namespace DigitalScrumBoard1.Controllers
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             var adminId = GetUserId();
 
-            // Ensure target user exists (include disabled users too if you use query filters)
             var userExists = await _db.Users
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -374,7 +482,6 @@ namespace DigitalScrumBoard1.Controllers
             if (!userExists)
                 return NotFound(new { message = "User not found." });
 
-            // ✅ Minimal unlock mechanism: add a successful LOGIN audit to break consecutive failures
             await _audit.LogAsync(
                 userId,
                 "LOGIN",
@@ -389,6 +496,78 @@ namespace DigitalScrumBoard1.Controllers
             );
 
             return Ok(new { message = "Account unlocked." });
+        }
+
+        private int? GetUserId()
+        {
+            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(id, out var parsed) ? parsed : null;
+        }
+
+        private static TimeSpan GetCooldownDuration(int consecutiveFailedAttempts)
+        {
+            if (consecutiveFailedAttempts < RateLimitStartsAtFailedAttempt)
+                return TimeSpan.Zero;
+
+            var extraSteps = consecutiveFailedAttempts - RateLimitStartsAtFailedAttempt;
+            return FirstCooldownDuration + TimeSpan.FromTicks(CooldownStepDuration.Ticks * extraSteps);
+        }
+
+        private async Task<(int ConsecutiveFailures, DateTime? LatestFailureUtc)> GetConsecutiveFailedLoginInfoAsync(int userId, CancellationToken ct)
+        {
+            var attempts = await _db.AuditLogs
+                .AsNoTracking()
+                .Where(a => a.UserID == userId && a.Action == "LOGIN")
+                .OrderByDescending(a => a.Timestamp)
+                .Select(a => new { a.Success, a.Timestamp })
+                .Take(50)
+                .ToListAsync(ct);
+
+            var consecutiveFailures = 0;
+            DateTime? latestFailureUtc = null;
+
+            foreach (var attempt in attempts)
+            {
+                if (attempt.Success)
+                    break;
+
+                consecutiveFailures++;
+
+                if (latestFailureUtc is null)
+                    latestFailureUtc = attempt.Timestamp;
+            }
+
+            return (consecutiveFailures, latestFailureUtc);
+        }
+
+        private async Task<(bool IsRateLimited, bool IsLocked, TimeSpan RetryAfter)> GetAuthAttemptStateAsync(int userId, CancellationToken ct)
+        {
+            var info = await GetConsecutiveFailedLoginInfoAsync(userId, ct);
+
+            if (info.ConsecutiveFailures <= 0 || info.LatestFailureUtc is null)
+                return (false, false, TimeSpan.Zero);
+
+            var now = DateTime.UtcNow;
+
+            if (info.ConsecutiveFailures >= AccountLockoutFailedAttempt)
+            {
+                var until = info.LatestFailureUtc.Value.Add(LockoutDuration);
+                if (now < until)
+                    return (false, true, until - now);
+
+                return (false, false, TimeSpan.Zero);
+            }
+
+            if (info.ConsecutiveFailures >= RateLimitStartsAtFailedAttempt)
+            {
+                var cooldown = GetCooldownDuration(info.ConsecutiveFailures);
+                var until = info.LatestFailureUtc.Value.Add(cooldown);
+
+                if (now < until)
+                    return (true, false, until - now);
+            }
+
+            return (false, false, TimeSpan.Zero);
         }
     }
 }

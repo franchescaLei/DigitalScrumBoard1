@@ -1,4 +1,4 @@
-﻿namespace DigitalScrumBoard1.Dtos
+﻿namespace DigitalScrumBoard1.DTOs.Authentication
 {
     public sealed class AuthUserDto
     {

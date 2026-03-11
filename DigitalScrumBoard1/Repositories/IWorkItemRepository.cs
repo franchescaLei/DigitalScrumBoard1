@@ -15,9 +15,19 @@ public interface IWorkItemRepository
 
     Task SaveChangesAsync(CancellationToken ct);
 
+    Task AddWithAuditAsync(WorkItem item, AuditLog audit, CancellationToken ct);
+
     Task<List<(int WorkItemID, string Title, string TypeName)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct);
 
     Task<List<EpicTileDto>> GetEpicTilesAsync(CancellationToken ct);
 
     Task<WorkItemDetailsResponseDto?> GetWorkItemDetailsAsync(int workItemId, CancellationToken ct);
+
+    Task<AgendasResponseDto> GetAgendasAsync(CancellationToken ct);
+
+    Task<Sprint?> GetSprintByIdAsync(int sprintId, CancellationToken ct);
+
+    Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct);
+
+    Task RemoveFromSprintAsync(WorkItem workItem, CancellationToken ct);
 }

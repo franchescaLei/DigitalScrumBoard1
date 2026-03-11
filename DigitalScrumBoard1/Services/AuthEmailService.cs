@@ -1,7 +1,6 @@
 ﻿using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DigitalScrumBoard1.Services
@@ -24,7 +23,6 @@ namespace DigitalScrumBoard1.Services
 
         public async Task SendWelcomeAndVerificationAsync(User user, string temporaryPassword, CancellationToken ct)
         {
-            // Create verification token (save first)
             var rawToken = EmailVerificationTokenFactory.CreateRawToken();
             var tokenHash = EmailVerificationTokenFactory.HashToken(rawToken);
 
@@ -74,7 +72,6 @@ namespace DigitalScrumBoard1.Services
                 UsedAt = null
             });
 
-            // Save token before email (reliability)
             await _db.SaveChangesAsync(ct);
 
             var baseUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
@@ -88,34 +85,16 @@ namespace DigitalScrumBoard1.Services
             );
         }
 
-        public async Task SendPasswordResetAsync(User user, CancellationToken ct)
+        public async Task SendPasswordResetCodeAsync(User user, string code, int expiresInSeconds, CancellationToken ct)
         {
-            // Create reset token (save first)
-            var rawToken = EmailVerificationTokenFactory.CreateRawToken();
-            var tokenHash = EmailVerificationTokenFactory.HashToken(rawToken);
-
-            _db.PasswordResetTokens.Add(new PasswordResetToken
-            {
-                UserID = user.UserID,
-                TokenHash = tokenHash,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(30),
-                UsedAt = null
-            });
-
-            // ✅ reliability fix: token saved before email
-            await _db.SaveChangesAsync(ct);
-
-            var resetBase = (_emailOptions.FrontendBaseUrl ?? "").TrimEnd('/');
-            var resetLink = $"{resetBase}/reset-password?token={Uri.EscapeDataString(rawToken)}";
-
             await _emailSender.SendAsync(
                 user.EmailAddress,
-                "Reset your password",
+                "Your password reset code",
                 $"""
                 <p>We received a request to reset your password.</p>
-                <p>Click the link below to set a new password (expires in 30 minutes):</p>
-                <p><a href="{resetLink}">Reset Password</a></p>
+                <p>Your 6-digit password reset code is:</p>
+                <h2 style="letter-spacing: 4px;">{System.Net.WebUtility.HtmlEncode(code)}</h2>
+                <p>This code expires in {expiresInSeconds} seconds.</p>
                 <p>If you did not request this, you may ignore this email.</p>
                 """,
                 ct

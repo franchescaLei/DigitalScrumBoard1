@@ -1,6 +1,7 @@
 ﻿using System.Net.Mail;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.DTOs.Authentication;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using Microsoft.EntityFrameworkCore;

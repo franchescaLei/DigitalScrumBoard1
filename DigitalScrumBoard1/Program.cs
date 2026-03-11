@@ -57,19 +57,15 @@ builder.Services.AddRateLimiter(options =>
 
     options.OnRejected = async (context, ct) =>
     {
-        // Ensure status code
         context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         context.HttpContext.Response.ContentType = "application/json";
 
-        // Try to extract retry-after from limiter metadata (if available)
-        int retryAfterSeconds = 60; // fallback to your window
+        int retryAfterSeconds = 60;
 
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter) &&
             retryAfter > TimeSpan.Zero)
         {
             retryAfterSeconds = (int)Math.Ceiling(retryAfter.TotalSeconds);
-
-            // Helpful for clients / browsers
             context.HttpContext.Response.Headers.RetryAfter = retryAfterSeconds.ToString();
         }
 
@@ -81,11 +77,13 @@ builder.Services.AddRateLimiter(options =>
         }, cancellationToken: ct);
     };
 
+    // Broad endpoint abuse protection only.
+    // The stepped login cooldown/lockout is now handled inside AuthController.
     options.AddFixedWindowLimiter("LoginLimiter", limiter =>
     {
-        limiter.PermitLimit = 5;
+        limiter.PermitLimit = 20;
         limiter.Window = TimeSpan.FromMinutes(1);
-        limiter.QueueLimit = 2;
+        limiter.QueueLimit = 0;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
 });
@@ -104,13 +102,15 @@ builder.Services.AddCors(options =>
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
-// ✅ New services (refactor)
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<IAuthEmailService, AuthEmailService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<ITeamService, TeamService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 builder.Services.AddScoped<IWorkItemRepository, WorkItemRepository>();
+builder.Services.AddScoped<ILookupRepository, LookupRepository>();
+builder.Services.AddScoped<ILookupService, LookupService>();
+builder.Services.AddScoped<ISprintRepository, SprintRepository>();
 
 var app = builder.Build();
 
@@ -125,14 +125,24 @@ app.UseHttpsRedirection();
 
 app.UseRouting();
 
-// ✅ Apply CORS policy to the pipeline
 app.UseCors("DSB");
+
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/auth"))
+    {
+        context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        context.Response.Headers["Pragma"] = "no-cache";
+        context.Response.Headers["Expires"] = "0";
+    }
+
+    await next();
+});
 
 app.UseAuthentication();
 
 app.Use(async (context, next) =>
 {
-    // Not logged in? Let normal auth/authorize handle it
     if (context.User?.Identity?.IsAuthenticated != true)
     {
         await next();
@@ -141,7 +151,6 @@ app.Use(async (context, next) =>
 
     var path = (context.Request.Path.Value ?? "").ToLowerInvariant();
 
-    // Allow these even if not verified
     if (path.StartsWith("/api/auth/me") ||
         path.StartsWith("/api/auth/logout") ||
         path.StartsWith("/api/auth/verify-email") ||

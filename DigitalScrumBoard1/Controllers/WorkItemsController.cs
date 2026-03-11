@@ -1,6 +1,7 @@
 ﻿using DigitalScrumBoard1.DTOs.WorkItems;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
+using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -12,10 +13,12 @@ namespace DigitalScrumBoard1.Controllers;
 public sealed class WorkItemsController : ControllerBase
 {
     private readonly IWorkItemRepository _repo;
+    private readonly IAuditService _audit;
 
-    public WorkItemsController(IWorkItemRepository repo)
+    public WorkItemsController(IWorkItemRepository repo, IAuditService audit)
     {
         _repo = repo;
+        _audit = audit;
     }
 
     [HttpPost]
@@ -43,7 +46,6 @@ public sealed class WorkItemsController : ControllerBase
         if (userId is null)
             return Unauthorized(new { message = "Missing/invalid user identity." });
 
-        // Resolve needed type IDs from WorkItemTypes table
         var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
         var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
         var taskTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Task", ct);
@@ -59,17 +61,14 @@ public sealed class WorkItemsController : ControllerBase
             _ => throw new InvalidOperationException()
         };
 
-        // Validate hierarchy rules
         switch (type)
         {
             case "Epic":
-                // Epic cannot be a child
                 if (req.ParentWorkItemID is not null)
                     return BadRequest(new { message = "Epic cannot have a parent." });
                 break;
 
             case "Story":
-                // Story must have an Epic parent
                 if (req.ParentWorkItemID is null)
                     return BadRequest(new { message = "Story requires ParentWorkItemID (Epic)." });
 
@@ -86,7 +85,6 @@ public sealed class WorkItemsController : ControllerBase
                 break;
 
             case "Task":
-                // Task must have an Epic or Story parent
                 if (req.ParentWorkItemID is null)
                     return BadRequest(new { message = "Task requires ParentWorkItemID (Epic or Story)." });
 
@@ -111,30 +109,33 @@ public sealed class WorkItemsController : ControllerBase
             Title = title,
             Description = desc,
             Priority = priority,
-
-            // Always default at creation (as requested)
             Status = "To-do",
-
             WorkItemTypeID = workItemTypeId,
-
             ParentWorkItemID = type == "Epic" ? null : req.ParentWorkItemID,
-
-            // Epic TeamID must start null; others may be null or set
             TeamID = type == "Epic" ? null : req.TeamID,
-
             AssignedUserID = req.AssignedUserID,
-
-            // Backlog default
             SprintID = null,
-
             CreatedByUserID = userId.Value,
             CreatedAt = now,
             UpdatedAt = now,
             IsDeleted = false
         };
 
-        await _repo.AddAsync(item, ct);
-        await _repo.SaveChangesAsync(ct);
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        var audit = new AuditLog
+        {
+            UserID = userId.Value,
+            Action = "WorkItem.Create",
+            IPAddress = ip,
+            Timestamp = now,
+            Success = true,
+            TargetType = "WorkItem",
+            TargetID = null,
+            Details = $"Type={type}; Title={title}; ParentWorkItemID={item.ParentWorkItemID}; TeamID={item.TeamID}; AssignedUserID={item.AssignedUserID}"
+        };
+
+        await _repo.AddWithAuditAsync(item, audit, ct);
 
         var resp = new WorkItemCreatedResponseDto
         {
@@ -160,14 +161,161 @@ public sealed class WorkItemsController : ControllerBase
         return wi is null ? NotFound() : Ok(wi);
     }
 
-    // ✅ NEW: details endpoint for epics (and reusable for any work item)
-    // Frontend should call: GET /api/workitems/{id}/details
     [HttpGet("{id:int}/details")]
     [Authorize]
     public async Task<ActionResult<WorkItemDetailsResponseDto>> GetDetails([FromRoute] int id, CancellationToken ct)
     {
         var details = await _repo.GetWorkItemDetailsAsync(id, ct);
         return details is null ? NotFound(new { message = "Work item not found." }) : Ok(details);
+    }
+
+    [HttpGet("parents")]
+    [Authorize]
+    public async Task<ActionResult<List<object>>> GetParents([FromQuery] string forType, CancellationToken ct)
+    {
+        var t = NormalizeType(forType);
+        if (t is null) return BadRequest(new { message = "Invalid forType." });
+
+        var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
+        var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
+        if (epicTypeId is null || storyTypeId is null)
+            return Problem("WorkItemTypes missing Epic/Story.");
+
+        var allowed = t == "Story"
+            ? new[] { epicTypeId.Value }
+            : new[] { epicTypeId.Value, storyTypeId.Value };
+
+        var parents = await _repo.ListParentsAsync(allowed, ct);
+
+        var resp = parents.Select(p => new { p.WorkItemID, p.Title, Type = p.TypeName }).ToList();
+        return Ok(resp);
+    }
+
+    [HttpGet("epics")]
+    [Authorize]
+    public async Task<ActionResult<List<EpicTileDto>>> GetEpicTiles(CancellationToken ct)
+    {
+        var result = await _repo.GetEpicTilesAsync(ct);
+        return Ok(result);
+    }
+
+    [HttpGet("agendas")]
+    [Authorize]
+    public async Task<ActionResult<AgendasResponseDto>> GetAgendas(CancellationToken ct)
+    {
+        var result = await _repo.GetAgendasAsync(ct);
+        return Ok(result);
+    }
+
+    [HttpPut("{id:int}/assign-sprint")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    public async Task<IActionResult> AssignToSprint(
+        [FromRoute] int id,
+        [FromBody] AssignWorkItemToSprintRequestDto req,
+        CancellationToken ct)
+    {
+        if (req.SprintID <= 0)
+            return BadRequest(new { message = "SprintID is required." });
+
+        var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
+        if (itemInfo is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (itemInfo.Value.IsDeleted)
+            return BadRequest(new { message = "Cannot assign a deleted work item." });
+
+        var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
+        var taskTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Task", ct);
+
+        if (storyTypeId is null || taskTypeId is null)
+            return Problem("WorkItemTypes table is missing Story/Task entries.");
+
+        if (itemInfo.Value.WorkItemTypeID != storyTypeId.Value &&
+            itemInfo.Value.WorkItemTypeID != taskTypeId.Value)
+        {
+            return BadRequest(new { message = "Only Story or Task work items can be assigned to a sprint." });
+        }
+
+        var workItem = await _repo.GetByIdAsync(id, ct);
+        if (workItem is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (workItem.Status == "Completed")
+            return BadRequest(new { message = "Completed work items cannot be assigned to a sprint." });
+
+        var sprint = await _repo.GetSprintByIdAsync(req.SprintID, ct);
+        if (sprint is null)
+            return BadRequest(new { message = "Sprint not found." });
+
+        if (sprint.Status == "Completed")
+            return BadRequest(new { message = "Cannot assign a work item to a completed sprint." });
+
+        await _repo.AssignToSprintAsync(workItem, req.SprintID, ct);
+
+        return Ok(new
+        {
+            message = "Work item assigned to sprint successfully.",
+            workItemID = workItem.WorkItemID,
+            sprintID = req.SprintID
+        });
+    }
+
+    [HttpPut("{id:int}/remove-sprint")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    public async Task<IActionResult> RemoveFromSprint([FromRoute] int id, CancellationToken ct)
+    {
+        var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
+        if (itemInfo is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (itemInfo.Value.IsDeleted)
+            return BadRequest(new { message = "Cannot modify a deleted work item." });
+
+        var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
+        var taskTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Task", ct);
+
+        if (storyTypeId is null || taskTypeId is null)
+            return Problem("WorkItemTypes table is missing Story/Task entries.");
+
+        if (itemInfo.Value.WorkItemTypeID != storyTypeId.Value &&
+            itemInfo.Value.WorkItemTypeID != taskTypeId.Value)
+        {
+            return BadRequest(new { message = "Only Story or Task work items can be removed from a sprint." });
+        }
+
+        var workItem = await _repo.GetByIdAsync(id, ct);
+        if (workItem is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (!workItem.SprintID.HasValue)
+            return BadRequest(new { message = "Work item is not currently assigned to a sprint." });
+
+        var oldSprintId = workItem.SprintID;
+
+        await _repo.RemoveFromSprintAsync(workItem, ct);
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "WorkItem.RemoveFromSprint",
+            "WorkItem",
+            workItem.WorkItemID,
+            true,
+            $"Removed WorkItemID={workItem.WorkItemID} from SprintID={oldSprintId}",
+            ip,
+            ct
+        );
+
+        return Ok(new
+        {
+            message = "Work item removed from sprint successfully.",
+            workItemID = workItem.WorkItemID
+        });
     }
 
     private static string? NormalizeType(string? raw)
@@ -191,39 +339,5 @@ public sealed class WorkItemsController : ControllerBase
             user.FindFirstValue("UserID");
 
         return int.TryParse(raw, out var id) ? id : null;
-    }
-
-    [HttpGet("parents")]
-    [Authorize]
-    public async Task<ActionResult<List<object>>> GetParents([FromQuery] string forType, CancellationToken ct)
-    {
-        var t = NormalizeType(forType);
-        if (t is null) return BadRequest(new { message = "Invalid forType." });
-
-        // Need type ids
-        var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
-        var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
-        if (epicTypeId is null || storyTypeId is null)
-            return Problem("WorkItemTypes missing Epic/Story.");
-
-        // Story: parent must be Epic
-        // Task: parent can be Epic or Story
-        var allowed = t == "Story"
-            ? new[] { epicTypeId.Value }
-            : new[] { epicTypeId.Value, storyTypeId.Value };
-
-        var parents = await _repo.ListParentsAsync(allowed, ct);
-
-        // return a slim response
-        var resp = parents.Select(p => new { p.WorkItemID, p.Title, Type = p.TypeName }).ToList();
-        return Ok(resp);
-    }
-
-    [HttpGet("epics")]
-    [Authorize]
-    public async Task<ActionResult<List<EpicTileDto>>> GetEpicTiles(CancellationToken ct)
-    {
-        var result = await _repo.GetEpicTilesAsync(ct);
-        return Ok(result);
     }
 }

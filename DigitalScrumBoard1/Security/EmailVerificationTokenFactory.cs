@@ -7,8 +7,13 @@ namespace DigitalScrumBoard1.Security
     {
         public static string CreateRawToken()
         {
-            var bytes = RandomNumberGenerator.GetBytes(32); // 256-bit
+            var bytes = RandomNumberGenerator.GetBytes(32);
             return Convert.ToBase64String(bytes);
+        }
+
+        public static string CreateSixDigitCode()
+        {
+            return RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
         }
 
         public static string HashToken(string rawToken)

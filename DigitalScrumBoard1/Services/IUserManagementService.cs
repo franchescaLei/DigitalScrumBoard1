@@ -1,4 +1,5 @@
 ﻿using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.DTOs.Authentication;
 
 namespace DigitalScrumBoard1.Services
 {

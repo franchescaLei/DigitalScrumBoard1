@@ -53,6 +53,28 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
     public Task SaveChangesAsync(CancellationToken ct) => _db.SaveChangesAsync(ct);
 
+    public async Task AddWithAuditAsync(WorkItem item, AuditLog audit, CancellationToken ct)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            await _db.WorkItems.AddAsync(item, ct);
+            await _db.SaveChangesAsync(ct);
+
+            audit.TargetID = item.WorkItemID;
+
+            await _db.AuditLogs.AddAsync(audit, ct);
+            await _db.SaveChangesAsync(ct);
+
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
+
     public async Task<List<(int WorkItemID, string Title, string TypeName)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct)
     {
         var rows = await (from w in _db.WorkItems.AsNoTracking()
@@ -100,7 +122,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 CompletedStories = _db.WorkItems.Count(s =>
                     s.ParentWorkItemID == epic.WorkItemID &&
                     s.WorkItemTypeID == storyTypeId &&
-                    s.Status == "Done" &&
+                    s.Status == "Completed" &&
                     !s.IsDeleted),
 
                 TotalTasks =
@@ -119,7 +141,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 CompletedTasks =
                     _db.WorkItems.Count(t =>
                         t.WorkItemTypeID == taskTypeId &&
-                        t.Status == "Done" &&
+                        t.Status == "Completed" &&
                         !t.IsDeleted &&
                         (
                             t.ParentWorkItemID == epic.WorkItemID ||
@@ -137,7 +159,6 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
     public async Task<WorkItemDetailsResponseDto?> GetWorkItemDetailsAsync(int workItemId, CancellationToken ct)
     {
-        // Type IDs
         var epicTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Epic").Select(t => t.WorkItemTypeID).FirstAsync(ct);
         var storyTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Story").Select(t => t.WorkItemTypeID).FirstAsync(ct);
         var taskTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Task").Select(t => t.WorkItemTypeID).FirstAsync(ct);
@@ -157,11 +178,11 @@ public sealed class WorkItemRepository : IWorkItemRepository
                                  w.Priority,
                                  w.DueDate,
                                  w.ParentWorkItemID,
-                                 w.TeamID,                 // int?
+                                 w.TeamID,
                                  TeamName = team != null ? team.TeamName : null,
                                  w.AssignedUserID
                              })
-     .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct);
 
         if (baseRow is null)
             return null;
@@ -193,21 +214,14 @@ public sealed class WorkItemRepository : IWorkItemRepository
             Status = baseRow.Status ?? "",
             Priority = baseRow.Priority,
             DueDate = baseRow.DueDate,
-
             ParentWorkItemID = baseRow.ParentWorkItemID,
             ParentTitle = parentTitle,
-
             TeamID = baseRow.TeamID,
             TeamName = baseRow.TeamName,
-
             AssignedUserID = baseRow.AssignedUserID,
             AssignedUserName = assignedUserName
         };
 
-        // Children rules (reusable):
-        // - Epic -> Stories under epic, Tasks under epic OR under those stories
-        // - Story -> Tasks under story
-        // - Task -> none
         if (baseRow.TypeName == "Epic")
         {
             dto.Stories = await (from s in _db.WorkItems.AsNoTracking()
@@ -264,5 +278,118 @@ public sealed class WorkItemRepository : IWorkItemRepository
         }
 
         return dto;
+    }
+
+    public async Task<AgendasResponseDto> GetAgendasAsync(CancellationToken ct)
+    {
+        var storyTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Story")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var taskTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Task")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var allowedTypeIds = new[] { storyTypeId, taskTypeId };
+
+        var sprintRows = await _db.Sprints
+            .AsNoTracking()
+            .OrderByDescending(s => s.SprintID)
+            .Select(s => new AgendaSprintDto
+            {
+                SprintID = s.SprintID,
+                SprintName = s.SprintName,
+                Status = s.Status,
+                StartDate = s.StartDate,
+                EndDate = s.EndDate,
+                WorkItems = new List<AgendaWorkItemDto>()
+            })
+            .ToListAsync(ct);
+
+        var sprintIds = sprintRows.Select(s => s.SprintID).ToList();
+
+        var sprintWorkItems = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking()
+                on w.WorkItemTypeID equals wt.WorkItemTypeID
+            where !w.IsDeleted
+                  && w.SprintID.HasValue
+                  && sprintIds.Contains(w.SprintID.Value)
+                  && allowedTypeIds.Contains(w.WorkItemTypeID)
+            orderby w.WorkItemID descending
+            select new AgendaWorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                TypeName = wt.TypeName,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                ParentWorkItemID = w.ParentWorkItemID,
+                SprintID = w.SprintID
+            })
+            .ToListAsync(ct);
+
+        var sprintWorkItemsBySprint = sprintWorkItems
+            .GroupBy(w => w.SprintID!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var sprint in sprintRows)
+        {
+            if (sprintWorkItemsBySprint.TryGetValue(sprint.SprintID, out var items))
+                sprint.WorkItems = items;
+        }
+
+        var backlogWorkItems = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking()
+                on w.WorkItemTypeID equals wt.WorkItemTypeID
+            where !w.IsDeleted
+                  && !w.SprintID.HasValue
+                  && allowedTypeIds.Contains(w.WorkItemTypeID)
+                  && w.Status != "Completed"
+            orderby w.WorkItemID descending
+            select new AgendaWorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                TypeName = wt.TypeName,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                ParentWorkItemID = w.ParentWorkItemID,
+                SprintID = w.SprintID
+            })
+            .ToListAsync(ct);
+
+        return new AgendasResponseDto
+        {
+            Sprints = sprintRows,
+            WorkItems = backlogWorkItems
+        };
+    }
+
+    public async Task<Sprint?> GetSprintByIdAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.Sprints
+            .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
+    }
+
+    public Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct)
+    {
+        workItem.SprintID = sprintId;
+        workItem.UpdatedAt = DateTime.UtcNow;
+
+        _db.WorkItems.Update(workItem);
+        return _db.SaveChangesAsync(ct);
+    }
+
+    public Task RemoveFromSprintAsync(WorkItem workItem, CancellationToken ct)
+    {
+        workItem.SprintID = null;
+        workItem.UpdatedAt = DateTime.UtcNow;
+
+        _db.WorkItems.Update(workItem);
+        return _db.SaveChangesAsync(ct);
     }
 }
