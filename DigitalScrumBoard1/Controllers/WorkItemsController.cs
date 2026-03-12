@@ -411,7 +411,7 @@ public sealed class WorkItemsController : ControllerBase
 
     private bool CanManageSprint(int userId, int? sprintManagedByUserId)
     {
-        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master") || User.IsInRole("ScrumMaster"))
             return true;
 
         return sprintManagedByUserId.HasValue && sprintManagedByUserId.Value == userId;
@@ -419,7 +419,7 @@ public sealed class WorkItemsController : ControllerBase
 
     private bool CanManageWorkItem(int userId, int? assignedUserId)
     {
-        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master") || User.IsInRole("ScrumMaster"))
             return true;
 
         return assignedUserId.HasValue && assignedUserId.Value == userId;
