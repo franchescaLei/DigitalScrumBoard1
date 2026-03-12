@@ -22,7 +22,7 @@ public sealed class SprintsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<ActionResult<SprintCreatedResponseDto>> Create(
         [FromBody] CreateSprintRequestDto req,
         CancellationToken ct)
@@ -164,7 +164,7 @@ public sealed class SprintsController : ControllerBase
     }
 
     [HttpDelete("{id:int}")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<IActionResult> Delete([FromRoute] int id, CancellationToken ct)
     {
         var sprint = await _repo.GetByIdAsync(id, ct);
@@ -203,7 +203,7 @@ public sealed class SprintsController : ControllerBase
 
     private bool CanManageSprint(int userId, int? sprintManagedByUserId)
     {
-        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master") || User.IsInRole("ScrumMaster"))
             return true;
 
         return sprintManagedByUserId.HasValue && sprintManagedByUserId.Value == userId;

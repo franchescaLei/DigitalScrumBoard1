@@ -58,12 +58,7 @@ namespace DigitalScrumBoard1.Controllers
             if (user.Disabled)
             {
                 await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, false, "Account disabled.", ip, ct);
-
-                return StatusCode(StatusCodes.Status403Forbidden, new
-                {
-                    message = "Account is disabled.",
-                    code = "ACCOUNT_DISABLED"
-                });
+                return Unauthorized(new { message = "Invalid credentials." });
             }
 
             var authState = await GetAuthAttemptStateAsync(user.UserID, ct);
@@ -473,6 +468,8 @@ namespace DigitalScrumBoard1.Controllers
         {
             var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             var adminId = GetUserId();
+            if (adminId is null)
+                return Unauthorized(new { message = "Missing/invalid user identity." });
 
             var userExists = await _db.Users
                 .IgnoreQueryFilters()
@@ -483,8 +480,8 @@ namespace DigitalScrumBoard1.Controllers
                 return NotFound(new { message = "User not found." });
 
             await _audit.LogAsync(
-                userId,
-                "LOGIN",
+                adminId.Value,
+                "UNLOCK_ACCOUNT",
                 "User",
                 userId,
                 true,
@@ -517,10 +514,17 @@ namespace DigitalScrumBoard1.Controllers
         {
             var attempts = await _db.AuditLogs
                 .AsNoTracking()
-                .Where(a => a.UserID == userId && a.Action == "LOGIN")
+                .Where(a =>
+                    (a.Action == "LOGIN" && a.UserID == userId) ||
+                    (a.Action == "UNLOCK_ACCOUNT" && a.TargetType == "User" && a.TargetID == userId && a.Success))
                 .OrderByDescending(a => a.Timestamp)
-                .Select(a => new { a.Success, a.Timestamp })
-                .Take(50)
+                .Select(a => new
+                {
+                    a.Action,
+                    a.Success,
+                    a.Timestamp,
+                    IsUnlockEvent = a.Action == "UNLOCK_ACCOUNT"
+                })
                 .ToListAsync(ct);
 
             var consecutiveFailures = 0;
@@ -528,6 +532,9 @@ namespace DigitalScrumBoard1.Controllers
 
             foreach (var attempt in attempts)
             {
+                if (attempt.IsUnlockEvent)
+                    break;
+
                 if (attempt.Success)
                     break;
 

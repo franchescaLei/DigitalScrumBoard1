@@ -13,7 +13,7 @@ public static class RoleSeeder
 
         context.Roles.AddRange(
             new Role { RoleName = "Administrator", Description = "System administrator" },
-            new Role { RoleName = "ScrumMaster", Description = "Manages scrum boards" },
+            new Role { RoleName = "Scrum Master", Description = "Manages scrum boards" },
             new Role { RoleName = "Employee", Description = "Standard user" }
         );
 
