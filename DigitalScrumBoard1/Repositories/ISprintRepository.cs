@@ -13,4 +13,6 @@ public interface ISprintRepository
     Task SaveChangesAsync(CancellationToken ct);
 
     Task<int> DeleteSprintAndUnassignWorkItemsAsync(int sprintId, CancellationToken ct);
+
+    Task StartSprintAsync(int sprintId, CancellationToken ct);
 }

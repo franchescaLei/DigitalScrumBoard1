@@ -46,6 +46,12 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .FirstOrDefaultAsync(w => w.WorkItemID == id, ct);
     }
 
+    public async Task<WorkItem?> GetTrackedByIdAsync(int id, CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .FirstOrDefaultAsync(w => w.WorkItemID == id, ct);
+    }
+
     public async Task AddAsync(WorkItem item, CancellationToken ct)
     {
         await _db.WorkItems.AddAsync(item, ct);
@@ -372,7 +378,17 @@ public sealed class WorkItemRepository : IWorkItemRepository
     public async Task<Sprint?> GetSprintByIdAsync(int sprintId, CancellationToken ct)
     {
         return await _db.Sprints
+            .AsNoTracking()
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
+    }
+
+    public async Task<int?> GetSprintManagerUserIdAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.Sprints
+            .AsNoTracking()
+            .Where(s => s.SprintID == sprintId)
+            .Select(s => s.ManagedBy)
+            .FirstOrDefaultAsync(ct);
     }
 
     public Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct)

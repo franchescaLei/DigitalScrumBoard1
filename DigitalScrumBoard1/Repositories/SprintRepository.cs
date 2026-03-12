@@ -83,4 +83,16 @@ public sealed class SprintRepository : ISprintRepository
             throw;
         }
     }
+
+    public async Task StartSprintAsync(int sprintId, CancellationToken ct)
+    {
+        var sprint = await _db.Sprints.FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
+        if (sprint is null)
+            return;
+
+        sprint.Status = "Active";
+        sprint.UpdatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+    }
 }

@@ -10,6 +10,7 @@ public interface IWorkItemRepository
     Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted)?> GetWorkItemTypeInfoByIdAsync(int id, CancellationToken ct);
 
     Task<WorkItem?> GetByIdAsync(int id, CancellationToken ct);
+    Task<WorkItem?> GetTrackedByIdAsync(int id, CancellationToken ct);
 
     Task AddAsync(WorkItem item, CancellationToken ct);
 
@@ -26,6 +27,8 @@ public interface IWorkItemRepository
     Task<AgendasResponseDto> GetAgendasAsync(CancellationToken ct);
 
     Task<Sprint?> GetSprintByIdAsync(int sprintId, CancellationToken ct);
+
+    Task<int?> GetSprintManagerUserIdAsync(int sprintId, CancellationToken ct);
 
     Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct);
 

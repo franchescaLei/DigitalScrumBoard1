@@ -119,6 +119,50 @@ public sealed class SprintsController : ControllerBase
         return Ok(new { message = "Sprint created. Detailed sprint retrieval can be added next.", id });
     }
 
+    [HttpPut("{id:int}/start")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> Start([FromRoute] int id, CancellationToken ct)
+    {
+        var sprint = await _repo.GetByIdAsync(id, ct);
+        if (sprint is null)
+            return NotFound(new { message = "Sprint not found." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
+        if (sprint.Status == "Active")
+            return BadRequest(new { message = "Sprint is already active." });
+
+        if (sprint.Status == "Completed")
+            return BadRequest(new { message = "Completed sprint cannot be started." });
+
+        await _repo.StartSprintAsync(id, ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "Sprint.Start",
+            "Sprint",
+            id,
+            true,
+            $"Started SprintID={id}; SprintName={sprint.SprintName}",
+            ip,
+            ct
+        );
+
+        return Ok(new
+        {
+            message = "Sprint started successfully.",
+            sprintID = id,
+            status = "Active"
+        });
+    }
+
     [HttpDelete("{id:int}")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
     public async Task<IActionResult> Delete([FromRoute] int id, CancellationToken ct)
@@ -155,6 +199,14 @@ public sealed class SprintsController : ControllerBase
             sprintID = id,
             returnedToBacklogCount
         });
+    }
+
+    private bool CanManageSprint(int userId, int? sprintManagedByUserId)
+    {
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+            return true;
+
+        return sprintManagedByUserId.HasValue && sprintManagedByUserId.Value == userId;
     }
 
     private static int? TryGetUserId(ClaimsPrincipal user)

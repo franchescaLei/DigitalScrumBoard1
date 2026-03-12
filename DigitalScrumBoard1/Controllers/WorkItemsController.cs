@@ -208,7 +208,7 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPut("{id:int}/assign-sprint")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> AssignToSprint(
         [FromRoute] int id,
         [FromBody] AssignWorkItemToSprintRequestDto req,
@@ -216,6 +216,10 @@ public sealed class WorkItemsController : ControllerBase
     {
         if (req.SprintID <= 0)
             return BadRequest(new { message = "SprintID is required." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
 
         var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
         if (itemInfo is null)
@@ -250,6 +254,9 @@ public sealed class WorkItemsController : ControllerBase
         if (sprint.Status == "Completed")
             return BadRequest(new { message = "Cannot assign a work item to a completed sprint." });
 
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
         await _repo.AssignToSprintAsync(workItem, req.SprintID, ct);
 
         return Ok(new
@@ -261,9 +268,13 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPut("{id:int}/remove-sprint")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> RemoveFromSprint([FromRoute] int id, CancellationToken ct)
     {
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
         var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
         if (itemInfo is null)
             return NotFound(new { message = "Work item not found." });
@@ -290,13 +301,16 @@ public sealed class WorkItemsController : ControllerBase
         if (!workItem.SprintID.HasValue)
             return BadRequest(new { message = "Work item is not currently assigned to a sprint." });
 
+        var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+        if (sprint is null)
+            return BadRequest(new { message = "Sprint not found." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
         var oldSprintId = workItem.SprintID;
 
         await _repo.RemoveFromSprintAsync(workItem, ct);
-
-        var userId = TryGetUserId(User);
-        if (userId is null)
-            return Unauthorized(new { message = "Missing/invalid user identity." });
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
@@ -318,6 +332,99 @@ public sealed class WorkItemsController : ControllerBase
         });
     }
 
+    [HttpPut("{id:int}/status")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> UpdateStatus(
+        [FromRoute] int id,
+        [FromBody] UpdateWorkItemStatusRequestDto req,
+        CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Status))
+            return BadRequest(new { message = "Status is required." });
+
+        var newStatus = NormalizeStatus(req.Status);
+        if (newStatus is null)
+            return BadRequest(new { message = "Invalid Status. Allowed: To-do, Ongoing, For Checking, Completed." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
+        if (itemInfo is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (itemInfo.Value.IsDeleted)
+            return BadRequest(new { message = "Cannot modify a deleted work item." });
+
+        var workItem = await _repo.GetTrackedByIdAsync(id, ct);
+        if (workItem is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (!CanManageWorkItem(userId.Value, workItem.AssignedUserID))
+        {
+            if (!workItem.SprintID.HasValue)
+                return Forbid();
+
+            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+            if (sprint is null || !CanManageSprint(userId.Value, sprint.ManagedBy))
+                return Forbid();
+        }
+
+        var oldStatus = workItem.Status;
+        if (string.Equals(oldStatus, newStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return Ok(new
+            {
+                message = "Work item status is already set to that value.",
+                workItemID = workItem.WorkItemID,
+                status = workItem.Status
+            });
+        }
+
+        workItem.Status = newStatus;
+        workItem.UpdatedAt = DateTime.UtcNow;
+
+        await _repo.SaveChangesAsync(ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "WorkItem.StatusChange",
+            "WorkItem",
+            workItem.WorkItemID,
+            true,
+            $"Changed WorkItemID={workItem.WorkItemID} status from {oldStatus} to {newStatus}",
+            ip,
+            ct
+        );
+
+        return Ok(new
+        {
+            message = "Work item status updated successfully.",
+            workItemID = workItem.WorkItemID,
+            oldStatus,
+            status = workItem.Status
+        });
+    }
+
+    private bool CanManageSprint(int userId, int? sprintManagedByUserId)
+    {
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+            return true;
+
+        return sprintManagedByUserId.HasValue && sprintManagedByUserId.Value == userId;
+    }
+
+    private bool CanManageWorkItem(int userId, int? assignedUserId)
+    {
+        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master"))
+            return true;
+
+        return assignedUserId.HasValue && assignedUserId.Value == userId;
+    }
+
     private static string? NormalizeType(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
@@ -328,6 +435,23 @@ public sealed class WorkItemsController : ControllerBase
             "epic" => "Epic",
             "story" => "Story",
             "task" => "Task",
+            _ => null
+        };
+    }
+
+    private static string? NormalizeStatus(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var s = raw.Trim().ToLowerInvariant();
+        return s switch
+        {
+            "to-do" => "To-do",
+            "todo" => "To-do",
+            "ongoing" => "Ongoing",
+            "for checking" => "For Checking",
+            "for-checking" => "For Checking",
+            "completed" => "Completed",
             _ => null
         };
     }
