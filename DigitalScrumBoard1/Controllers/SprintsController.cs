@@ -1,9 +1,11 @@
 ﻿using DigitalScrumBoard1.DTOs.Sprints;
+using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
 using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 
 namespace DigitalScrumBoard1.Controllers;
@@ -14,11 +16,16 @@ public sealed class SprintsController : ControllerBase
 {
     private readonly ISprintRepository _repo;
     private readonly IAuditService _audit;
+    private readonly IHubContext<BoardHub> _hub;
 
-    public SprintsController(ISprintRepository repo, IAuditService audit)
+    public SprintsController(
+        ISprintRepository repo,
+        IAuditService audit,
+        IHubContext<BoardHub> hub)
     {
         _repo = repo;
         _audit = audit;
+        _hub = hub;
     }
 
     [HttpPost]
@@ -140,6 +147,24 @@ public sealed class SprintsController : ControllerBase
         if (sprint.Status == "Completed")
             return BadRequest(new { message = "Completed sprint cannot be started." });
 
+        var workItemsMissingAssignee = await _repo.GetSprintWorkItemsMissingAssigneeAsync(id, ct);
+        if (workItemsMissingAssignee.Count > 0)
+        {
+            var unassignedWorkItems = workItemsMissingAssignee
+                .Select(w => new
+                {
+                    w.WorkItemID,
+                    Title = w.Title
+                })
+                .ToList();
+
+            return Conflict(new
+            {
+                message = "Sprint cannot be started because some work items do not have an assigned user.",
+                unassignedWorkItems
+            });
+        }
+
         await _repo.StartSprintAsync(id, ct);
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -155,6 +180,26 @@ public sealed class SprintsController : ControllerBase
             ct
         );
 
+        var assignedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
+        var notifications = assignedUserIds.Select(assignedUserId => new Notification
+        {
+            UserID = assignedUserId,
+            RelatedSprintID = id,
+            NotificationType = "SprintStarted",
+            Message = $"Sprint '{sprint.SprintName}' has started.",
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        });
+
+        await _repo.AddNotificationsAsync(notifications, ct);
+
+        await _hub.Clients.All.SendAsync("SprintStarted", new
+        {
+            sprintID = id,
+            sprintName = sprint.SprintName,
+            status = "Active"
+        }, ct);
+
         return Ok(new
         {
             message = "Sprint started successfully.",
@@ -163,11 +208,200 @@ public sealed class SprintsController : ControllerBase
         });
     }
 
+    [HttpPut("{id:int}/stop")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> Stop(
+        [FromRoute] int id,
+        [FromBody] SprintLifecycleRequestDto? req,
+        CancellationToken ct)
+    {
+        if (id <= 0)
+            return BadRequest(new { message = "SprintID must be greater than 0." });
+
+        req ??= new SprintLifecycleRequestDto();
+
+        var sprint = await _repo.GetTrackedByIdAsync(id, ct);
+        if (sprint is null)
+            return NotFound(new { message = "Sprint not found." });
+
+        if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Only active sprints can be stopped." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
+        var sprintWorkItems = await _repo.GetTrackedSprintWorkItemsAsync(id, ct);
+        var unfinishedCount = sprintWorkItems.Count(w => !string.Equals(w.Status, "Completed", StringComparison.OrdinalIgnoreCase));
+        var completedCount = sprintWorkItems.Count(w => string.Equals(w.Status, "Completed", StringComparison.OrdinalIgnoreCase));
+
+        if (unfinishedCount > 0 && !req.Confirm)
+        {
+            return Conflict(new
+            {
+                message = "This sprint still has unfinished work items. Confirm to stop the sprint.",
+                requiresConfirmation = true,
+                unfinishedCount,
+                completedCount
+            });
+        }
+
+        await _repo.StopSprintAsync(sprint, ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "Sprint.Stop",
+            "Sprint",
+            id,
+            true,
+            $"Stopped SprintID={id}; SprintName={sprint.SprintName}; UnfinishedCount={unfinishedCount}; CompletedCount={completedCount}",
+            ip,
+            ct
+        );
+
+        var affectedUserIds = sprintWorkItems
+            .Where(w => w.AssignedUserID.HasValue)
+            .Select(w => w.AssignedUserID!.Value)
+            .Distinct()
+            .ToList();
+
+        var notifications = affectedUserIds.Select(assignedUserId => new Notification
+        {
+            UserID = assignedUserId,
+            RelatedSprintID = id,
+            NotificationType = "SprintStopped",
+            Message = $"Sprint '{sprint.SprintName}' has been stopped.",
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        });
+
+        await _repo.AddNotificationsAsync(notifications, ct);
+
+        await _hub.Clients.All.SendAsync("SprintStopped", new
+        {
+            sprintID = id,
+            sprintName = sprint.SprintName,
+            unfinishedCount,
+            completedCount,
+            status = "Planned"
+        }, ct);
+
+        return Ok(new
+        {
+            message = "Sprint stopped successfully.",
+            sprintID = id,
+            status = "Planned",
+            unfinishedCount,
+            completedCount
+        });
+    }
+
+    [HttpPut("{id:int}/complete")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> Complete(
+        [FromRoute] int id,
+        [FromBody] SprintLifecycleRequestDto? req,
+        CancellationToken ct)
+    {
+        if (id <= 0)
+            return BadRequest(new { message = "SprintID must be greater than 0." });
+
+        req ??= new SprintLifecycleRequestDto();
+
+        var sprint = await _repo.GetTrackedByIdAsync(id, ct);
+        if (sprint is null)
+            return NotFound(new { message = "Sprint not found." });
+
+        if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Only active sprints can be completed." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
+        var sprintWorkItems = await _repo.GetTrackedSprintWorkItemsAsync(id, ct);
+        var unfinishedCount = sprintWorkItems.Count(w => !string.Equals(w.Status, "Completed", StringComparison.OrdinalIgnoreCase));
+        var completedCount = sprintWorkItems.Count(w => string.Equals(w.Status, "Completed", StringComparison.OrdinalIgnoreCase));
+
+        if (unfinishedCount > 0 && !req.Confirm)
+        {
+            return Conflict(new
+            {
+                message = "This sprint still has unfinished work items. Confirm to complete the sprint and return unfinished items to backlog.",
+                requiresConfirmation = true,
+                unfinishedCount,
+                completedCount
+            });
+        }
+
+        var sprintName = sprint.SprintName;
+
+        var affectedUserIds = sprintWorkItems
+            .Where(w => w.AssignedUserID.HasValue)
+            .Select(w => w.AssignedUserID!.Value)
+            .Distinct()
+            .ToList();
+
+        await _repo.CompleteSprintAsync(sprint, sprintWorkItems, ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "Sprint.Complete",
+            "Sprint",
+            id,
+            true,
+            $"Completed SprintID={id}; SprintName={sprintName}; ReturnedToBacklogCount={unfinishedCount}; CompletedRecordCount={completedCount}",
+            ip,
+            ct
+        );
+
+        var notifications = affectedUserIds.Select(assignedUserId => new Notification
+        {
+            UserID = assignedUserId,
+            RelatedSprintID = null,
+            NotificationType = "SprintCompleted",
+            Message = unfinishedCount > 0
+                ? $"Sprint '{sprintName}' has been completed. {unfinishedCount} unfinished work item(s) were returned to backlog."
+                : $"Sprint '{sprintName}' has been completed.",
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        });
+
+        await _repo.AddNotificationsAsync(notifications, ct);
+
+        await _hub.Clients.All.SendAsync("SprintCompleted", new
+        {
+            sprintID = id,
+            sprintName,
+            returnedToBacklogCount = unfinishedCount,
+            completedRecordCount = completedCount
+        }, ct);
+
+        return Ok(new
+        {
+            message = "Sprint completed successfully.",
+            sprintID = id,
+            returnedToBacklogCount = unfinishedCount,
+            completedRecordCount = completedCount
+        });
+    }
+
     [HttpDelete("{id:int}")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<IActionResult> Delete([FromRoute] int id, CancellationToken ct)
     {
         var sprint = await _repo.GetByIdAsync(id, ct);
+
         if (sprint is null)
             return NotFound(new { message = "Sprint not found." });
 

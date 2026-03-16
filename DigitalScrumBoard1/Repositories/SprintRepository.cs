@@ -34,6 +34,19 @@ public sealed class SprintRepository : ISprintRepository
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
     }
 
+    public async Task<Sprint?> GetTrackedByIdAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.Sprints
+            .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
+    }
+
+    public async Task<List<WorkItem>> GetTrackedSprintWorkItemsAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .Where(w => w.SprintID == sprintId && !w.IsDeleted)
+            .ToListAsync(ct);
+    }
+
     public async Task AddAsync(Sprint sprint, CancellationToken ct)
     {
         await _db.Sprints.AddAsync(sprint, ct);
@@ -93,6 +106,74 @@ public sealed class SprintRepository : ISprintRepository
         sprint.Status = "Active";
         sprint.UpdatedAt = DateTime.UtcNow;
 
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task StopSprintAsync(Sprint sprint, CancellationToken ct)
+    {
+        sprint.Status = "Planned";
+        sprint.UpdatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task CompleteSprintAsync(Sprint sprint, List<WorkItem> sprintWorkItems, CancellationToken ct)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            var now = DateTime.UtcNow;
+
+            foreach (var workItem in sprintWorkItems)
+            {
+                workItem.SprintID = null;
+                workItem.UpdatedAt = now;
+            }
+
+            _db.Sprints.Remove(sprint);
+
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    public async Task<List<WorkItem>> GetSprintWorkItemsMissingAssigneeAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                w.SprintID == sprintId &&
+                !w.IsDeleted &&
+                !w.AssignedUserID.HasValue)
+            .OrderBy(w => w.WorkItemID)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<int>> GetSprintAssignedUserIdsAsync(int sprintId, CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                w.SprintID == sprintId &&
+                !w.IsDeleted &&
+                w.AssignedUserID.HasValue)
+            .Select(w => w.AssignedUserID!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
+    public async Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct)
+    {
+        var items = notifications.ToList();
+        if (items.Count == 0)
+            return;
+
+        await _db.Notifications.AddRangeAsync(items, ct);
         await _db.SaveChangesAsync(ct);
     }
 }

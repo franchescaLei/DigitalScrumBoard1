@@ -1,4 +1,6 @@
-﻿namespace DigitalScrumBoard1.Models
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace DigitalScrumBoard1.Models
 {
     public class WorkItem
     {
@@ -35,5 +37,14 @@
 
         public bool IsDeleted { get; set; }
         public DateTime? DeletedAt { get; set; }
+
+        // =============================
+        // NEW FIELDS (SAFE ADDITIONS)
+        // =============================
+
+        public int BoardOrder { get; set; } = 0;
+
+        [Timestamp]
+        public byte[] RowVersion { get; set; } = Array.Empty<byte>();
     }
 }

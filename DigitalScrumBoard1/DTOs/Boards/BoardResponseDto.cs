@@ -1,0 +1,27 @@
+﻿namespace DigitalScrumBoard1.DTOs;
+
+public class BoardResponseDto
+{
+    public int SprintID { get; set; }
+
+    public string SprintName { get; set; } = "";
+
+    public List<WorkItemBoardDto> Todo { get; set; } = new();
+
+    public List<WorkItemBoardDto> Ongoing { get; set; } = new();
+
+    public List<WorkItemBoardDto> ForChecking { get; set; } = new();
+
+    public List<WorkItemBoardDto> Completed { get; set; } = new();
+}
+
+public class WorkItemBoardDto
+{
+    public int WorkItemID { get; set; }
+
+    public string Title { get; set; } = "";
+
+    public string Status { get; set; } = "";
+
+    public int? AssignedUserID { get; set; }
+}

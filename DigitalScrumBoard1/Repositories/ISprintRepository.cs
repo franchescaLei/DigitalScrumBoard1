@@ -8,6 +8,8 @@ public interface ISprintRepository
     Task<bool> TeamExistsAsync(int teamId, CancellationToken ct);
 
     Task<Sprint?> GetByIdAsync(int sprintId, CancellationToken ct);
+    Task<Sprint?> GetTrackedByIdAsync(int sprintId, CancellationToken ct);
+    Task<List<WorkItem>> GetTrackedSprintWorkItemsAsync(int sprintId, CancellationToken ct);
 
     Task AddAsync(Sprint sprint, CancellationToken ct);
     Task SaveChangesAsync(CancellationToken ct);
@@ -15,4 +17,11 @@ public interface ISprintRepository
     Task<int> DeleteSprintAndUnassignWorkItemsAsync(int sprintId, CancellationToken ct);
 
     Task StartSprintAsync(int sprintId, CancellationToken ct);
+    Task StopSprintAsync(Sprint sprint, CancellationToken ct);
+    Task CompleteSprintAsync(Sprint sprint, List<WorkItem> sprintWorkItems, CancellationToken ct);
+
+    Task<List<WorkItem>> GetSprintWorkItemsMissingAssigneeAsync(int sprintId, CancellationToken ct);
+    Task<List<int>> GetSprintAssignedUserIdsAsync(int sprintId, CancellationToken ct);
+
+    Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct);
 }
