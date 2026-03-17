@@ -7,6 +7,7 @@ public interface ISprintRepository
     Task<bool> UserExistsAsync(int userId, CancellationToken ct);
     Task<bool> TeamExistsAsync(int teamId, CancellationToken ct);
 
+    Task<List<Sprint>> GetAllAsync(CancellationToken ct);
     Task<Sprint?> GetByIdAsync(int sprintId, CancellationToken ct);
     Task<Sprint?> GetTrackedByIdAsync(int sprintId, CancellationToken ct);
     Task<List<WorkItem>> GetTrackedSprintWorkItemsAsync(int sprintId, CancellationToken ct);
@@ -20,6 +21,7 @@ public interface ISprintRepository
     Task StopSprintAsync(Sprint sprint, CancellationToken ct);
     Task CompleteSprintAsync(Sprint sprint, List<WorkItem> sprintWorkItems, CancellationToken ct);
 
+    Task<bool> HasAnyWorkItemsAsync(int sprintId, CancellationToken ct);
     Task<List<WorkItem>> GetSprintWorkItemsMissingAssigneeAsync(int sprintId, CancellationToken ct);
     Task<List<int>> GetSprintAssignedUserIdsAsync(int sprintId, CancellationToken ct);
 

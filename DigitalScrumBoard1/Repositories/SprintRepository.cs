@@ -27,6 +27,14 @@ public sealed class SprintRepository : ISprintRepository
             .AnyAsync(t => t.TeamID == teamId, ct);
     }
 
+    public async Task<List<Sprint>> GetAllAsync(CancellationToken ct)
+    {
+        return await _db.Sprints
+            .AsNoTracking()
+            .OrderByDescending(s => s.SprintID)
+            .ToListAsync(ct);
+    }
+
     public async Task<Sprint?> GetByIdAsync(int sprintId, CancellationToken ct)
     {
         return await _db.Sprints
@@ -140,6 +148,13 @@ public sealed class SprintRepository : ISprintRepository
             await tx.RollbackAsync(ct);
             throw;
         }
+    }
+
+    public Task<bool> HasAnyWorkItemsAsync(int sprintId, CancellationToken ct)
+    {
+        return _db.WorkItems
+            .AsNoTracking()
+            .AnyAsync(w => w.SprintID == sprintId && !w.IsDeleted, ct);
     }
 
     public async Task<List<WorkItem>> GetSprintWorkItemsMissingAssigneeAsync(int sprintId, CancellationToken ct)

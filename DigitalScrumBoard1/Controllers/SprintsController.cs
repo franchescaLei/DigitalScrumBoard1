@@ -119,11 +119,53 @@ public sealed class SprintsController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = sprint.SprintID }, resp);
     }
 
+    [HttpGet]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<ActionResult<IEnumerable<object>>> GetAll(CancellationToken ct)
+    {
+        var sprints = await _repo.GetAllAsync(ct);
+
+        var response = sprints.Select(s => new
+        {
+            sprintID = s.SprintID,
+            sprintName = s.SprintName,
+            goal = s.Goal,
+            startDate = s.StartDate,
+            endDate = s.EndDate,
+            status = s.Status,
+            managedBy = s.ManagedBy,
+            teamID = s.TeamID,
+            createdAt = s.CreatedAt,
+            updatedAt = s.UpdatedAt
+        });
+
+        return Ok(response);
+    }
+
     [HttpGet("{id:int}")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth")]
-    public ActionResult<object> GetById([FromRoute] int id)
+    public async Task<ActionResult<object>> GetById([FromRoute] int id, CancellationToken ct)
     {
-        return Ok(new { message = "Sprint created. Detailed sprint retrieval can be added next.", id });
+        if (id <= 0)
+            return BadRequest(new { message = "SprintID must be greater than 0." });
+
+        var sprint = await _repo.GetByIdAsync(id, ct);
+        if (sprint is null)
+            return NotFound(new { message = "Sprint not found." });
+
+        return Ok(new
+        {
+            sprintID = sprint.SprintID,
+            sprintName = sprint.SprintName,
+            goal = sprint.Goal,
+            startDate = sprint.StartDate,
+            endDate = sprint.EndDate,
+            status = sprint.Status,
+            managedBy = sprint.ManagedBy,
+            teamID = sprint.TeamID,
+            createdAt = sprint.CreatedAt,
+            updatedAt = sprint.UpdatedAt
+        });
     }
 
     [HttpPut("{id:int}/start")]
@@ -146,6 +188,15 @@ public sealed class SprintsController : ControllerBase
 
         if (sprint.Status == "Completed")
             return BadRequest(new { message = "Completed sprint cannot be started." });
+
+        var hasWorkItems = await _repo.HasAnyWorkItemsAsync(id, ct);
+        if (!hasWorkItems)
+        {
+            return Conflict(new
+            {
+                message = "Sprint cannot be started because it has no work items."
+            });
+        }
 
         var workItemsMissingAssignee = await _repo.GetSprintWorkItemsMissingAssigneeAsync(id, ct);
         if (workItemsMissingAssignee.Count > 0)
