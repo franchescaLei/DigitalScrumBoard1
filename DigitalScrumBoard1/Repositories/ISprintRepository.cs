@@ -26,4 +26,9 @@ public interface ISprintRepository
     Task<List<int>> GetSprintAssignedUserIdsAsync(int sprintId, CancellationToken ct);
 
     Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct);
+
+    Task UpdateSprintAndAddNotificationsAsync(
+        Sprint sprint,
+        IEnumerable<Notification> notifications,
+        CancellationToken ct);
 }

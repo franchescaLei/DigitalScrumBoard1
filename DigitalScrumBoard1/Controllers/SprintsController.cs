@@ -168,6 +168,188 @@ public sealed class SprintsController : ControllerBase
         });
     }
 
+    [HttpPatch("{id:int}")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> Patch(
+        [FromRoute] int id,
+        [FromBody] UpdateSprintRequestDto req,
+        CancellationToken ct)
+    {
+        if (!ModelState.IsValid)
+            return ValidationProblem(ModelState);
+
+        if (id <= 0)
+            return BadRequest(new { message = "SprintID must be greater than 0." });
+
+        if (req is null)
+            return BadRequest(new { message = "Request body is required." });
+
+        var hasAnyPatchField =
+            req.SprintName is not null ||
+            req.Goal is not null ||
+            req.StartDate.HasValue ||
+            req.EndDate.HasValue ||
+            req.TeamID.HasValue ||
+            req.ManagedBy.HasValue;
+
+        if (!hasAnyPatchField)
+            return BadRequest(new { message = "At least one field must be provided." });
+
+        var sprint = await _repo.GetTrackedByIdAsync(id, ct);
+        if (sprint is null)
+            return NotFound(new { message = "Sprint not found." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return Forbid();
+
+        var isElevatedRole = IsElevatedSprintRole();
+
+        if (req.ManagedBy.HasValue && !isElevatedRole)
+            return Forbid();
+
+        var changedFields = new List<string>();
+
+        if (req.SprintName is not null)
+        {
+            var newSprintName = req.SprintName.Trim();
+            if (newSprintName.Length == 0)
+                return BadRequest(new { message = "SprintName cannot be empty." });
+
+            if (!string.Equals(sprint.SprintName, newSprintName, StringComparison.Ordinal))
+            {
+                changedFields.Add($"SprintName:{sprint.SprintName}->{newSprintName}");
+                sprint.SprintName = newSprintName;
+            }
+        }
+
+        if (req.Goal is not null)
+        {
+            var newGoal = req.Goal.Trim();
+            if (newGoal.Length == 0)
+                return BadRequest(new { message = "Goal cannot be empty." });
+
+            if (!string.Equals(sprint.Goal ?? "", newGoal, StringComparison.Ordinal))
+            {
+                changedFields.Add($"Goal:{sprint.Goal}->{newGoal}");
+                sprint.Goal = newGoal;
+            }
+        }
+
+        if (req.TeamID.HasValue)
+        {
+            var teamExists = await _repo.TeamExistsAsync(req.TeamID.Value, ct);
+            if (!teamExists)
+                return BadRequest(new { message = "Team not found." });
+
+            if (sprint.TeamID != req.TeamID.Value)
+            {
+                changedFields.Add($"TeamID:{sprint.TeamID}->{req.TeamID.Value}");
+                sprint.TeamID = req.TeamID.Value;
+            }
+        }
+
+        if (req.ManagedBy.HasValue)
+        {
+            var managerExists = await _repo.UserExistsAsync(req.ManagedBy.Value, ct);
+            if (!managerExists)
+                return BadRequest(new { message = "ManagedBy user was not found or is disabled." });
+
+            if (sprint.ManagedBy != req.ManagedBy.Value)
+            {
+                changedFields.Add($"ManagedBy:{sprint.ManagedBy}->{req.ManagedBy.Value}");
+                sprint.ManagedBy = req.ManagedBy.Value;
+            }
+        }
+
+        var finalStartDate = req.StartDate ?? sprint.StartDate;
+        var finalEndDate = req.EndDate ?? sprint.EndDate;
+
+        if (finalEndDate < finalStartDate)
+            return BadRequest(new { message = "EndDate cannot be earlier than StartDate." });
+
+        if (req.StartDate.HasValue && sprint.StartDate != req.StartDate.Value)
+        {
+            changedFields.Add($"StartDate:{sprint.StartDate}->{req.StartDate.Value}");
+            sprint.StartDate = req.StartDate.Value;
+        }
+
+        if (req.EndDate.HasValue && sprint.EndDate != req.EndDate.Value)
+        {
+            changedFields.Add($"EndDate:{sprint.EndDate}->{req.EndDate.Value}");
+            sprint.EndDate = req.EndDate.Value;
+        }
+
+        if (changedFields.Count == 0)
+        {
+            return Ok(new
+            {
+                message = "No changes detected.",
+                sprintID = sprint.SprintID
+            });
+        }
+
+        var assignedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
+        var notifications = assignedUserIds.Select(assignedUserId => new Notification
+        {
+            UserID = assignedUserId,
+            RelatedSprintID = id,
+            NotificationType = "SprintUpdated",
+            Message = $"Sprint '{sprint.SprintName}' has been updated.",
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        });
+
+        await _repo.UpdateSprintAndAddNotificationsAsync(sprint, notifications, ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "Sprint.Update",
+            "Sprint",
+            sprint.SprintID,
+            true,
+            $"Updated SprintID={sprint.SprintID}; Changes={string.Join("; ", changedFields)}",
+            ip,
+            ct
+        );
+
+        await _hub.Clients.All.SendAsync("SprintUpdated", new
+        {
+            sprintID = sprint.SprintID,
+            sprintName = sprint.SprintName,
+            goal = sprint.Goal,
+            startDate = sprint.StartDate,
+            endDate = sprint.EndDate,
+            managedBy = sprint.ManagedBy,
+            teamID = sprint.TeamID
+        }, ct);
+
+        return Ok(new
+        {
+            message = "Sprint updated successfully.",
+            sprintID = sprint.SprintID,
+            changedFields,
+            sprint = new
+            {
+                sprintID = sprint.SprintID,
+                sprintName = sprint.SprintName,
+                goal = sprint.Goal,
+                startDate = sprint.StartDate,
+                endDate = sprint.EndDate,
+                status = sprint.Status,
+                managedBy = sprint.ManagedBy,
+                teamID = sprint.TeamID,
+                createdAt = sprint.CreatedAt,
+                updatedAt = sprint.UpdatedAt
+            }
+        });
+    }
+
     [HttpPut("{id:int}/start")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> Start([FromRoute] int id, CancellationToken ct)
@@ -488,10 +670,17 @@ public sealed class SprintsController : ControllerBase
 
     private bool CanManageSprint(int userId, int? sprintManagedByUserId)
     {
-        if (User.IsInRole("Administrator") || User.IsInRole("Scrum Master") || User.IsInRole("ScrumMaster"))
+        if (IsElevatedSprintRole())
             return true;
 
         return sprintManagedByUserId.HasValue && sprintManagedByUserId.Value == userId;
+    }
+
+    private bool IsElevatedSprintRole()
+    {
+        return User.IsInRole("Administrator") ||
+               User.IsInRole("Scrum Master") ||
+               User.IsInRole("ScrumMaster");
     }
 
     private static int? TryGetUserId(ClaimsPrincipal user)

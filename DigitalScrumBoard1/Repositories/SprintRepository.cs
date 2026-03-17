@@ -191,4 +191,29 @@ public sealed class SprintRepository : ISprintRepository
         await _db.Notifications.AddRangeAsync(items, ct);
         await _db.SaveChangesAsync(ct);
     }
+
+    public async Task UpdateSprintAndAddNotificationsAsync(
+        Sprint sprint,
+        IEnumerable<Notification> notifications,
+        CancellationToken ct)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            var items = notifications.ToList();
+
+            sprint.UpdatedAt = DateTime.UtcNow;
+
+            if (items.Count > 0)
+                await _db.Notifications.AddRangeAsync(items, ct);
+
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
 }
