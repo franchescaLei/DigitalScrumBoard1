@@ -13,10 +13,13 @@ namespace DigitalScrumBoard1.Controllers
     public sealed class UsersController : ControllerBase
     {
         private readonly IUserManagementService _users;
-        private readonly IEmailSender _emailSender; // used only for admin reset email body
-        private readonly IAuditService _audit;       // used to log admin reset email send
+        private readonly IEmailSender _emailSender;
+        private readonly IAuditService _audit;
 
-        public UsersController(IUserManagementService users, IEmailSender emailSender, IAuditService audit)
+        public UsersController(
+            IUserManagementService users,
+            IEmailSender emailSender,
+            IAuditService audit)
         {
             _users = users;
             _emailSender = emailSender;
@@ -28,12 +31,28 @@ namespace DigitalScrumBoard1.Controllers
             [FromQuery] int? teamId,
             [FromQuery] int? roleId,
             [FromQuery] bool? disabled,
+            [FromQuery] bool? locked,
+            [FromQuery] bool? emailVerified,
             [FromQuery] string? search,
+            [FromQuery] string? sortBy,
+            [FromQuery] string? sortDirection,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 50,
             CancellationToken ct = default)
         {
-            var result = await _users.ListUsersAsync(teamId, roleId, disabled, search, page, pageSize, ct);
+            var result = await _users.ListUsersAsync(
+                teamId,
+                roleId,
+                disabled,
+                locked,
+                emailVerified,
+                search,
+                sortBy,
+                sortDirection,
+                page,
+                pageSize,
+                ct);
+
             return Ok(result);
         }
 
@@ -42,6 +61,13 @@ namespace DigitalScrumBoard1.Controllers
         {
             var user = await _users.GetUserByIdAsync(id, ct);
             return user is null ? NotFound(new { message = "User not found." }) : Ok(user);
+        }
+
+        [HttpGet("roles")]
+        public async Task<IActionResult> GetRoles(CancellationToken ct)
+        {
+            var roles = await _users.GetRolesAsync(ct);
+            return Ok(roles);
         }
 
         [HttpPost]
@@ -60,7 +86,6 @@ namespace DigitalScrumBoard1.Controllers
             }
             catch (InvalidOperationException ex)
             {
-                // Map the old controller responses without changing overall behavior intent
                 var msg = ex.Message;
 
                 if (msg.Contains("Invalid email", StringComparison.OrdinalIgnoreCase))
@@ -125,6 +150,7 @@ namespace DigitalScrumBoard1.Controllers
             catch (InvalidOperationException ex)
             {
                 var msg = ex.Message;
+
                 if (msg == "User not found.")
                     return NotFound(new { message = msg });
 
@@ -146,17 +172,6 @@ namespace DigitalScrumBoard1.Controllers
             if (tempPassword == "Account is disabled.")
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
 
-            // Email temp password (same flow as before: do NOT return via API)
-            // NOTE: We need the user email; simplest is: fetch user details via /api/users/{id} if needed,
-            // but we keep it internal by sending directly here with minimal change: client will still see Ok message.
-            // If you want 100% no extra DB calls, add a dedicated method to the service returning email too.
-            // For now, keep behavior: email gets sent.
-            //
-            // Because the service already updated the hash and logged RESET_USER_PASSWORD, we only send the email here.
-            // If email fails, your previous system would throw; we keep same behavior (fail request) to preserve flow.
-            //
-            // To send, we need email address; the service could return it, but to keep minimal file count:
-            // do a small read using GetUserByIdAsync.
             var userObj = await _users.GetUserByIdAsync(id, ct);
             if (userObj is null)
                 return NotFound(new { message = "User not found." });
@@ -174,7 +189,15 @@ namespace DigitalScrumBoard1.Controllers
                 ct
             );
 
-            await _audit.LogAsync(actorId, "SEND_RESET_PASSWORD_EMAIL", "User", id, true, "Sent admin reset password email.", ip, ct);
+            await _audit.LogAsync(
+                actorId,
+                "SEND_RESET_PASSWORD_EMAIL",
+                "User",
+                id,
+                true,
+                "Sent admin reset password email.",
+                ip,
+                ct);
 
             return Ok(new { message = "Password reset email sent." });
         }

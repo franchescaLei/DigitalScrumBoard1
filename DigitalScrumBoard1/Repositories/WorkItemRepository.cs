@@ -83,13 +83,14 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
     public async Task<List<(int WorkItemID, string Title, string TypeName)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct)
     {
-        var rows = await (from w in _db.WorkItems.AsNoTracking()
-                          join t in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals t.WorkItemTypeID
-                          where !w.IsDeleted && allowedTypeIds.Contains(w.WorkItemTypeID)
-                          orderby w.WorkItemID descending
-                          select new { w.WorkItemID, w.Title, t.TypeName })
-                         .Take(200)
-                         .ToListAsync(ct);
+        var rows = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join t in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals t.WorkItemTypeID
+            where !w.IsDeleted && allowedTypeIds.Contains(w.WorkItemTypeID)
+            orderby w.WorkItemID descending
+            select new { w.WorkItemID, w.Title, t.TypeName })
+            .Take(200)
+            .ToListAsync(ct);
 
         return rows.Select(r => (r.WorkItemID, r.Title ?? "", r.TypeName)).ToList();
     }
@@ -113,174 +114,205 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
         var epics = await _db.WorkItems
             .AsNoTracking()
-            .Where(w => w.WorkItemTypeID == epicTypeId && !w.IsDeleted)
+            .Where(w => !w.IsDeleted && w.WorkItemTypeID == epicTypeId)
             .OrderByDescending(w => w.WorkItemID)
-            .Select(epic => new EpicTileDto
+            .Select(w => new { w.WorkItemID, w.Title })
+            .ToListAsync(ct);
+
+        var epicIds = epics.Select(e => e.WorkItemID).ToList();
+
+        var stories = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == storyTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                epicIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
             {
-                EpicID = epic.WorkItemID,
-                EpicTitle = epic.Title,
-
-                TotalStories = _db.WorkItems.Count(s =>
-                    s.ParentWorkItemID == epic.WorkItemID &&
-                    s.WorkItemTypeID == storyTypeId &&
-                    !s.IsDeleted),
-
-                CompletedStories = _db.WorkItems.Count(s =>
-                    s.ParentWorkItemID == epic.WorkItemID &&
-                    s.WorkItemTypeID == storyTypeId &&
-                    s.Status == "Completed" &&
-                    !s.IsDeleted),
-
-                TotalTasks =
-                    _db.WorkItems.Count(t =>
-                        t.WorkItemTypeID == taskTypeId &&
-                        !t.IsDeleted &&
-                        (
-                            t.ParentWorkItemID == epic.WorkItemID ||
-                            _db.WorkItems.Any(s =>
-                                s.WorkItemID == t.ParentWorkItemID &&
-                                s.ParentWorkItemID == epic.WorkItemID &&
-                                s.WorkItemTypeID == storyTypeId
-                            )
-                        )),
-
-                CompletedTasks =
-                    _db.WorkItems.Count(t =>
-                        t.WorkItemTypeID == taskTypeId &&
-                        t.Status == "Completed" &&
-                        !t.IsDeleted &&
-                        (
-                            t.ParentWorkItemID == epic.WorkItemID ||
-                            _db.WorkItems.Any(s =>
-                                s.WorkItemID == t.ParentWorkItemID &&
-                                s.ParentWorkItemID == epic.WorkItemID &&
-                                s.WorkItemTypeID == storyTypeId
-                            )
-                        ))
+                w.WorkItemID,
+                EpicID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
             })
             .ToListAsync(ct);
 
-        return epics;
+        var storyIds = stories.Select(s => s.WorkItemID).ToList();
+        var storyToEpic = stories.ToDictionary(s => s.WorkItemID, s => s.EpicID);
+
+        var directEpicTasks = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == taskTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                epicIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
+            {
+                EpicID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
+            })
+            .ToListAsync(ct);
+
+        var storyTasks = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == taskTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                storyIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
+            {
+                StoryID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
+            })
+            .ToListAsync(ct);
+
+        var storyCountsByEpic = stories
+            .GroupBy(x => x.EpicID)
+            .ToDictionary(
+                g => g.Key,
+                g => new
+                {
+                    Total = g.Count(),
+                    Completed = g.Count(x => x.IsCompleted)
+                });
+
+        var allTaskRows = new List<(int EpicID, bool IsCompleted)>();
+
+        allTaskRows.AddRange(directEpicTasks.Select(x => (x.EpicID, x.IsCompleted)));
+
+        foreach (var row in storyTasks)
+        {
+            if (storyToEpic.TryGetValue(row.StoryID, out var epicId))
+                allTaskRows.Add((epicId, row.IsCompleted));
+        }
+
+        var taskCountsByEpic = allTaskRows
+            .GroupBy(x => x.EpicID)
+            .ToDictionary(
+                g => g.Key,
+                g => new
+                {
+                    Total = g.Count(),
+                    Completed = g.Count(x => x.IsCompleted)
+                });
+
+        return epics.Select(e =>
+        {
+            storyCountsByEpic.TryGetValue(e.WorkItemID, out var storyCounts);
+            taskCountsByEpic.TryGetValue(e.WorkItemID, out var taskCounts);
+
+            return new EpicTileDto
+            {
+                EpicID = e.WorkItemID,
+                EpicTitle = e.Title ?? "",
+                TotalStories = storyCounts?.Total ?? 0,
+                CompletedStories = storyCounts?.Completed ?? 0,
+                TotalTasks = taskCounts?.Total ?? 0,
+                CompletedTasks = taskCounts?.Completed ?? 0
+            };
+        }).ToList();
     }
 
     public async Task<WorkItemDetailsResponseDto?> GetWorkItemDetailsAsync(int workItemId, CancellationToken ct)
     {
-        var epicTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Epic").Select(t => t.WorkItemTypeID).FirstAsync(ct);
-        var storyTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Story").Select(t => t.WorkItemTypeID).FirstAsync(ct);
-        var taskTypeId = await _db.WorkItemTypes.Where(t => t.TypeName == "Task").Select(t => t.WorkItemTypeID).FirstAsync(ct);
-
-        var baseRow = await (from w in _db.WorkItems.AsNoTracking()
-                             join wt in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals wt.WorkItemTypeID
-                             join team in _db.Teams.AsNoTracking() on w.TeamID equals team.TeamID into teamJoin
-                             from team in teamJoin.DefaultIfEmpty()
-                             where w.WorkItemID == workItemId && !w.IsDeleted
-                             select new
-                             {
-                                 w.WorkItemID,
-                                 TypeName = wt.TypeName,
-                                 w.Title,
-                                 w.Description,
-                                 w.Status,
-                                 w.Priority,
-                                 w.DueDate,
-                                 w.ParentWorkItemID,
-                                 w.TeamID,
-                                 TeamName = team != null ? team.TeamName : null,
-                                 w.AssignedUserID
-                             })
+        var dto = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals wt.WorkItemTypeID
+            join p in _db.WorkItems.AsNoTracking() on w.ParentWorkItemID equals p.WorkItemID into pj
+            from p in pj.DefaultIfEmpty()
+            join t in _db.Teams.AsNoTracking() on w.TeamID equals t.TeamID into tj
+            from t in tj.DefaultIfEmpty()
+            join u in _db.Users.AsNoTracking() on w.AssignedUserID equals u.UserID into uj
+            from u in uj.DefaultIfEmpty()
+            where !w.IsDeleted && w.WorkItemID == workItemId
+            select new WorkItemDetailsResponseDto
+            {
+                WorkItemID = w.WorkItemID,
+                TypeName = wt.TypeName,
+                Title = w.Title ?? "",
+                Description = w.Description,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                DueDate = w.DueDate,
+                ParentWorkItemID = w.ParentWorkItemID,
+                ParentTitle = p != null ? p.Title : null,
+                TeamID = w.TeamID,
+                TeamName = t != null ? t.TeamName : null,
+                AssignedUserID = w.AssignedUserID,
+                AssignedUserName = u != null ? (u.FirstName + " " + u.LastName).Trim() : null
+            })
             .FirstOrDefaultAsync(ct);
 
-        if (baseRow is null)
+        if (dto is null)
             return null;
 
-        string? assignedUserName = null;
-        if (baseRow.AssignedUserID.HasValue)
+        if (string.Equals(dto.TypeName, "Epic", StringComparison.OrdinalIgnoreCase))
         {
-            assignedUserName = await _db.Users.AsNoTracking()
-                .Where(u => u.UserID == baseRow.AssignedUserID.Value)
-                .Select(u => (u.FirstName + " " + u.LastName).Trim())
-                .FirstOrDefaultAsync(ct);
+            var storyTypeId = await _db.WorkItemTypes
+                .Where(t => t.TypeName == "Story")
+                .Select(t => t.WorkItemTypeID)
+                .FirstAsync(ct);
+
+            var taskTypeId = await _db.WorkItemTypes
+                .Where(t => t.TypeName == "Task")
+                .Select(t => t.WorkItemTypeID)
+                .FirstAsync(ct);
+
+            dto.Stories = await (
+                from s in _db.WorkItems.AsNoTracking()
+                join st in _db.WorkItemTypes.AsNoTracking() on s.WorkItemTypeID equals st.WorkItemTypeID
+                where !s.IsDeleted
+                      && s.WorkItemTypeID == storyTypeId
+                      && s.ParentWorkItemID == workItemId
+                orderby s.WorkItemID
+                select new WorkItemChildDto
+                {
+                    WorkItemID = s.WorkItemID,
+                    TypeName = st.TypeName,
+                    Title = s.Title ?? "",
+                    Status = s.Status ?? "",
+                    Priority = s.Priority
+                }).ToListAsync(ct);
+
+            dto.Tasks = await (
+                from t in _db.WorkItems.AsNoTracking()
+                join tt in _db.WorkItemTypes.AsNoTracking() on t.WorkItemTypeID equals tt.WorkItemTypeID
+                where !t.IsDeleted
+                      && t.WorkItemTypeID == taskTypeId
+                      && t.ParentWorkItemID == workItemId
+                orderby t.WorkItemID
+                select new WorkItemChildDto
+                {
+                    WorkItemID = t.WorkItemID,
+                    TypeName = tt.TypeName,
+                    Title = t.Title ?? "",
+                    Status = t.Status ?? "",
+                    Priority = t.Priority
+                }).ToListAsync(ct);
         }
-
-        string? parentTitle = null;
-        if (baseRow.ParentWorkItemID.HasValue)
+        else if (string.Equals(dto.TypeName, "Story", StringComparison.OrdinalIgnoreCase))
         {
-            parentTitle = await _db.WorkItems.AsNoTracking()
-                .Where(p => p.WorkItemID == baseRow.ParentWorkItemID.Value)
-                .Select(p => p.Title)
-                .FirstOrDefaultAsync(ct);
-        }
+            var taskTypeId = await _db.WorkItemTypes
+                .Where(t => t.TypeName == "Task")
+                .Select(t => t.WorkItemTypeID)
+                .FirstAsync(ct);
 
-        var dto = new WorkItemDetailsResponseDto
-        {
-            WorkItemID = baseRow.WorkItemID,
-            TypeName = baseRow.TypeName,
-            Title = baseRow.Title ?? "",
-            Description = baseRow.Description,
-            Status = baseRow.Status ?? "",
-            Priority = baseRow.Priority,
-            DueDate = baseRow.DueDate,
-            ParentWorkItemID = baseRow.ParentWorkItemID,
-            ParentTitle = parentTitle,
-            TeamID = baseRow.TeamID,
-            TeamName = baseRow.TeamName,
-            AssignedUserID = baseRow.AssignedUserID,
-            AssignedUserName = assignedUserName
-        };
-
-        if (baseRow.TypeName == "Epic")
-        {
-            dto.Stories = await (from s in _db.WorkItems.AsNoTracking()
-                                 join st in _db.WorkItemTypes.AsNoTracking() on s.WorkItemTypeID equals st.WorkItemTypeID
-                                 where !s.IsDeleted
-                                       && s.WorkItemTypeID == storyTypeId
-                                       && s.ParentWorkItemID == workItemId
-                                 orderby s.WorkItemID
-                                 select new WorkItemChildDto
-                                 {
-                                     WorkItemID = s.WorkItemID,
-                                     TypeName = st.TypeName,
-                                     Title = s.Title,
-                                     Status = s.Status,
-                                     Priority = s.Priority
-                                 }).ToListAsync(ct);
-
-            var storyIds = dto.Stories.Select(x => x.WorkItemID).ToList();
-
-            dto.Tasks = await (from t in _db.WorkItems.AsNoTracking()
-                               join tt in _db.WorkItemTypes.AsNoTracking() on t.WorkItemTypeID equals tt.WorkItemTypeID
-                               where !t.IsDeleted
-                                     && t.WorkItemTypeID == taskTypeId
-                                     && (
-                                         t.ParentWorkItemID == workItemId ||
-                                         (t.ParentWorkItemID.HasValue && storyIds.Contains(t.ParentWorkItemID.Value))
-                                     )
-                               orderby t.WorkItemID
-                               select new WorkItemChildDto
-                               {
-                                   WorkItemID = t.WorkItemID,
-                                   TypeName = tt.TypeName,
-                                   Title = t.Title,
-                                   Status = t.Status,
-                                   Priority = t.Priority
-                               }).ToListAsync(ct);
-        }
-        else if (baseRow.TypeName == "Story")
-        {
-            dto.Tasks = await (from t in _db.WorkItems.AsNoTracking()
-                               join tt in _db.WorkItemTypes.AsNoTracking() on t.WorkItemTypeID equals tt.WorkItemTypeID
-                               where !t.IsDeleted
-                                     && t.WorkItemTypeID == taskTypeId
-                                     && t.ParentWorkItemID == workItemId
-                               orderby t.WorkItemID
-                               select new WorkItemChildDto
-                               {
-                                   WorkItemID = t.WorkItemID,
-                                   TypeName = tt.TypeName,
-                                   Title = t.Title,
-                                   Status = t.Status,
-                                   Priority = t.Priority
-                               }).ToListAsync(ct);
+            dto.Tasks = await (
+                from t in _db.WorkItems.AsNoTracking()
+                join tt in _db.WorkItemTypes.AsNoTracking() on t.WorkItemTypeID equals tt.WorkItemTypeID
+                where !t.IsDeleted
+                      && t.WorkItemTypeID == taskTypeId
+                      && t.ParentWorkItemID == workItemId
+                orderby t.WorkItemID
+                select new WorkItemChildDto
+                {
+                    WorkItemID = t.WorkItemID,
+                    TypeName = tt.TypeName,
+                    Title = t.Title ?? "",
+                    Status = t.Status ?? "",
+                    Priority = t.Priority
+                }).ToListAsync(ct);
         }
 
         return dto;
@@ -407,5 +439,41 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
         _db.WorkItems.Update(workItem);
         return _db.SaveChangesAsync(ct);
+    }
+
+    public Task<bool> UserExistsAsync(int userId, CancellationToken ct)
+    {
+        return _db.Users
+            .AsNoTracking()
+            .AnyAsync(u => u.UserID == userId && !u.Disabled, ct);
+    }
+
+    public Task<bool> TeamExistsAsync(int teamId, CancellationToken ct)
+    {
+        return _db.Teams
+            .AsNoTracking()
+            .AnyAsync(t => t.TeamID == teamId, ct);
+    }
+
+    public Task<bool> HasActiveChildrenAsync(int workItemId, CancellationToken ct)
+    {
+        return _db.WorkItems
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(w => w.ParentWorkItemID == workItemId && !w.IsDeleted, ct);
+    }
+
+    public async Task AddHistoryAsync(WorkItemHistory history, CancellationToken ct)
+    {
+        await _db.WorkItemHistories.AddAsync(history, ct);
+    }
+
+    public async Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct)
+    {
+        var items = notifications.ToList();
+        if (items.Count == 0)
+            return;
+
+        await _db.Notifications.AddRangeAsync(items, ct);
     }
 }

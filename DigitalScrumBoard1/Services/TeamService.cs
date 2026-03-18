@@ -18,7 +18,9 @@ namespace DigitalScrumBoard1.Services
 
         public async Task<object> CreateTeamAsync(CreateTeamRequestDto req, int actorUserId, string ipAddress, CancellationToken ct)
         {
-            var name = req.TeamName.Trim();
+            var name = (req.TeamName ?? string.Empty).Trim();
+            if (name.Length == 0)
+                throw new InvalidOperationException("Team name is required.");
 
             var exists = await _db.Teams
                 .AsNoTracking()
@@ -38,7 +40,15 @@ namespace DigitalScrumBoard1.Services
             _db.Teams.Add(team);
             await _db.SaveChangesAsync(ct);
 
-            await _audit.LogAsync(actorUserId, "CREATE_TEAM", "Team", team.TeamID, true, $"Created team {team.TeamName}", ipAddress, ct);
+            await _audit.LogAsync(
+                actorUserId,
+                "CREATE_TEAM",
+                "Team",
+                team.TeamID,
+                true,
+                $"Created team {team.TeamName}",
+                ipAddress,
+                ct);
 
             return new
             {
@@ -64,6 +74,74 @@ namespace DigitalScrumBoard1.Services
                     t.CreatedAt
                 })
                 .SingleOrDefaultAsync(ct);
+        }
+
+        public async Task<object> ListTeamsAsync(
+            string? search,
+            bool? isActive,
+            string? sortBy,
+            string? sortDirection,
+            int page,
+            int pageSize,
+            CancellationToken ct)
+        {
+            if (page < 1) page = 1;
+            if (pageSize < 1) pageSize = 1;
+            if (pageSize > 200) pageSize = 200;
+
+            var q = _db.Teams.AsNoTracking().AsQueryable();
+
+            if (isActive.HasValue)
+                q = q.Where(t => t.IsActive == isActive.Value);
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var s = search.Trim().ToLowerInvariant();
+                q = q.Where(t =>
+                    t.TeamName.ToLower().Contains(s) ||
+                    (t.Description != null && t.Description.ToLower().Contains(s)));
+            }
+
+            q = ApplyTeamSorting(q, sortBy, sortDirection);
+
+            var total = await q.CountAsync(ct);
+
+            var items = await q
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(t => new
+                {
+                    t.TeamID,
+                    t.TeamName,
+                    t.Description,
+                    t.IsActive,
+                    t.CreatedAt
+                })
+                .ToListAsync(ct);
+
+            return new
+            {
+                page,
+                pageSize,
+                total,
+                items
+            };
+        }
+
+        private static IQueryable<Team> ApplyTeamSorting(
+            IQueryable<Team> q,
+            string? sortBy,
+            string? sortDirection)
+        {
+            var descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+
+            return sortBy?.Trim() switch
+            {
+                "TeamName" => descending ? q.OrderByDescending(t => t.TeamName) : q.OrderBy(t => t.TeamName),
+                "CreatedAt" => descending ? q.OrderByDescending(t => t.CreatedAt) : q.OrderBy(t => t.CreatedAt),
+                "IsActive" => descending ? q.OrderByDescending(t => t.IsActive).ThenBy(t => t.TeamName) : q.OrderBy(t => t.IsActive).ThenBy(t => t.TeamName),
+                _ => q.OrderBy(t => t.TeamName)
+            };
         }
     }
 }

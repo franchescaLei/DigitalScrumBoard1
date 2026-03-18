@@ -18,6 +18,28 @@ namespace DigitalScrumBoard1.Controllers
             _teams = teams;
         }
 
+        [HttpGet]
+        public async Task<IActionResult> List(
+            [FromQuery] string? search,
+            [FromQuery] bool? isActive,
+            [FromQuery] string? sortBy,
+            [FromQuery] string? sortDirection,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 50,
+            CancellationToken ct = default)
+        {
+            var result = await _teams.ListTeamsAsync(
+                search,
+                isActive,
+                sortBy,
+                sortDirection,
+                page,
+                pageSize,
+                ct);
+
+            return Ok(result);
+        }
+
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateTeamRequestDto req, CancellationToken ct)
         {

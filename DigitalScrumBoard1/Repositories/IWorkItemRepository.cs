@@ -7,7 +7,9 @@ public interface IWorkItemRepository
 {
     Task<int?> GetWorkItemTypeIdByNameAsync(string typeName, CancellationToken ct);
 
-    Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted)?> GetWorkItemTypeInfoByIdAsync(int id, CancellationToken ct);
+    Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted)?> GetWorkItemTypeInfoByIdAsync(
+        int id,
+        CancellationToken ct);
 
     Task<WorkItem?> GetByIdAsync(int id, CancellationToken ct);
     Task<WorkItem?> GetTrackedByIdAsync(int id, CancellationToken ct);
@@ -33,4 +35,14 @@ public interface IWorkItemRepository
     Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct);
 
     Task RemoveFromSprintAsync(WorkItem workItem, CancellationToken ct);
+
+    Task<bool> UserExistsAsync(int userId, CancellationToken ct);
+
+    Task<bool> TeamExistsAsync(int teamId, CancellationToken ct);
+
+    Task<bool> HasActiveChildrenAsync(int workItemId, CancellationToken ct);
+
+    Task AddHistoryAsync(WorkItemHistory history, CancellationToken ct);
+
+    Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct);
 }
