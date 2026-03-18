@@ -4,6 +4,7 @@ using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 
 namespace DigitalScrumBoard1.Services;
 
@@ -58,7 +59,7 @@ public class BoardService : IBoardService
 
         var normalizedSortBy = NormalizeSortBy(sortBy);
         if (sortBy is not null && normalizedSortBy is null)
-            throw new ArgumentException("Invalid sortBy. Allowed values: Priority, DueDate, CreatedDate.");
+            throw new ArgumentException("Invalid sortBy. Allowed values: Priority, DueDate, CreatedDate, UpdatedDate, Title, Assignee.");
 
         var normalizedSortDirection = NormalizeSortDirection(sortDirection);
         if (sortDirection is not null && normalizedSortDirection is null)
@@ -120,17 +121,27 @@ public class BoardService : IBoardService
         if (normalizedStatus is null)
             throw new ArgumentException("Invalid status. Allowed values: To-do, Ongoing, For Checking, Completed.");
 
-        if (!BoardWorkflowRules.IsValidTransition(item.Status, normalizedStatus))
-            throw new ArgumentException($"Invalid status transition from '{item.Status}' to '{normalizedStatus}'.");
-
-        bool allowed =
+        var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
             item.AssignedUserID == userId;
 
         if (!allowed)
+        {
+            await _audit.LogAsync(
+                userId,
+                "WorkItem.MoveBoardStatus",
+                "WorkItem",
+                item.WorkItemID,
+                false,
+                $"Unauthorized move attempt for WorkItemID={item.WorkItemID}; RequestedStatus={normalizedStatus}; SprintID={item.SprintID}",
+                string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
+                ct
+            );
+
             throw new UnauthorizedAccessException("You are not allowed to move this work item.");
+        }
 
         var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
         if (sprint is null)
@@ -139,37 +150,101 @@ public class BoardService : IBoardService
         if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Sprint not active.");
 
-        using var tx = await _db.Database.BeginTransactionAsync(ct);
+        if (string.Equals(item.Status, normalizedStatus, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (!BoardWorkflowRules.IsValidTransition(item.Status, normalizedStatus))
+            throw new ArgumentException($"Invalid status transition from '{item.Status}' to '{normalizedStatus}'.");
 
         var oldStatus = item.Status;
+        var oldBoardOrder = item.BoardOrder;
+        var now = DateTime.UtcNow;
+
+        var sourceColumnItems = await _repo.GetTrackedColumnWorkItemsAsync(
+            item.SprintID.Value,
+            oldStatus,
+            ct);
+
+        var destinationColumnItems = await _repo.GetTrackedColumnWorkItemsAsync(
+            item.SprintID.Value,
+            normalizedStatus,
+            ct);
+
+        var sourceOrdered = sourceColumnItems
+            .OrderBy(w => w.BoardOrder)
+            .ThenBy(w => w.CreatedAt)
+            .ThenBy(w => w.WorkItemID)
+            .Where(w => w.WorkItemID != item.WorkItemID)
+            .ToList();
+
+        var destinationOrdered = destinationColumnItems
+            .OrderBy(w => w.BoardOrder)
+            .ThenBy(w => w.CreatedAt)
+            .ThenBy(w => w.WorkItemID)
+            .Where(w => w.WorkItemID != item.WorkItemID)
+            .ToList();
 
         item.Status = normalizedStatus;
-        item.UpdatedAt = DateTime.UtcNow;
+        item.UpdatedAt = now;
+        destinationOrdered.Add(item);
 
-        await _repo.AddHistoryAsync(new WorkItemHistory
-        {
-            WorkItemID = item.WorkItemID,
-            FieldChanged = "Status",
-            OldValue = oldStatus,
-            NewValue = normalizedStatus,
-            ChangedAt = DateTime.UtcNow,
-            ChangedBy = userId
-        }, ct);
+        var changedBoardOrders = new List<(WorkItem Item, int OldOrder, int NewOrder)>();
 
-        if (item.AssignedUserID != null)
+        NormalizeColumnBoardOrder(sourceOrdered, now, changedBoardOrders);
+        NormalizeColumnBoardOrder(destinationOrdered, now, changedBoardOrders);
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
         {
-            await _repo.AddNotificationAsync(new Notification
+            await _repo.AddHistoryAsync(new WorkItemHistory
             {
-                UserID = item.AssignedUserID.Value,
-                Message = $"Work item '{item.Title}' moved to {normalizedStatus}",
-                NotificationType = "StatusChanged",
-                RelatedWorkItemID = item.WorkItemID,
-                CreatedAt = DateTime.UtcNow
+                WorkItemID = item.WorkItemID,
+                FieldChanged = "Status",
+                OldValue = oldStatus,
+                NewValue = normalizedStatus,
+                ChangedAt = now,
+                ChangedBy = userId
             }, ct);
-        }
 
-        await _repo.SaveAsync(ct);
-        await tx.CommitAsync(ct);
+            foreach (var changed in changedBoardOrders)
+            {
+                await _repo.AddHistoryAsync(new WorkItemHistory
+                {
+                    WorkItemID = changed.Item.WorkItemID,
+                    FieldChanged = "BoardOrder",
+                    OldValue = changed.OldOrder.ToString(),
+                    NewValue = changed.NewOrder.ToString(),
+                    ChangedAt = now,
+                    ChangedBy = userId
+                }, ct);
+            }
+
+            if (item.AssignedUserID.HasValue)
+            {
+                await _repo.AddNotificationAsync(new Notification
+                {
+                    UserID = item.AssignedUserID.Value,
+                    Message = $"Work item '{item.Title}' moved from {oldStatus} to {normalizedStatus}",
+                    NotificationType = "StatusChanged",
+                    RelatedWorkItemID = item.WorkItemID,
+                    CreatedAt = now,
+                    IsRead = false
+                }, ct);
+            }
+
+            await _repo.SaveAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await tx.RollbackAsync(ct);
+            throw new InvalidOperationException("The board was updated by another user. Refresh and try again.");
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
 
         await _audit.LogAsync(
             userId,
@@ -177,17 +252,18 @@ public class BoardService : IBoardService
             "WorkItem",
             item.WorkItemID,
             true,
-            $"Moved WorkItemID={item.WorkItemID} from {oldStatus} to {normalizedStatus}; SprintID={item.SprintID}",
+            $"Moved WorkItemID={item.WorkItemID} from {oldStatus} to {normalizedStatus}; OldBoardOrder={oldBoardOrder}; NewBoardOrder={item.BoardOrder}; SprintID={item.SprintID}",
             string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
             ct
         );
 
         await _hub.Clients
-            .Group($"sprint-{item.SprintID}")
+            .Group($"sprint-{item.SprintID.Value}")
             .SendAsync("WorkItemMoved", new
             {
                 item.WorkItemID,
-                newStatus = normalizedStatus
+                newStatus = normalizedStatus,
+                newBoardOrder = item.BoardOrder
             }, ct);
     }
 
@@ -211,14 +287,27 @@ public class BoardService : IBoardService
         if (!item.SprintID.HasValue)
             throw new InvalidOperationException("Work item is not assigned to a sprint.");
 
-        bool allowed =
+        var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
             item.AssignedUserID == userId;
 
         if (!allowed)
+        {
+            await _audit.LogAsync(
+                userId,
+                "WorkItem.ReorderBoardPosition",
+                "WorkItem",
+                item.WorkItemID,
+                false,
+                $"Unauthorized reorder attempt for WorkItemID={item.WorkItemID}; RequestedPosition={newPosition}; SprintID={item.SprintID}",
+                string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
+                ct
+            );
+
             throw new UnauthorizedAccessException("You are not allowed to reorder this work item.");
+        }
 
         var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
         if (sprint is null)
@@ -227,12 +316,67 @@ public class BoardService : IBoardService
         if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Sprint not active.");
 
-        var oldPosition = item.BoardOrder;
+        var columnItems = await _repo.GetTrackedColumnWorkItemsAsync(
+            item.SprintID.Value,
+            item.Status,
+            ct);
 
-        item.BoardOrder = newPosition;
-        item.UpdatedAt = DateTime.UtcNow;
+        var orderedColumnItems = columnItems
+            .OrderBy(w => w.BoardOrder)
+            .ThenBy(w => w.CreatedAt)
+            .ThenBy(w => w.WorkItemID)
+            .ToList();
 
-        await _repo.SaveAsync(ct);
+        var existingIndex = orderedColumnItems.FindIndex(w => w.WorkItemID == item.WorkItemID);
+        if (existingIndex < 0)
+            throw new InvalidOperationException("Work item is not part of its current board column.");
+
+        if (newPosition >= orderedColumnItems.Count)
+            throw new ArgumentException($"NewPosition must be between 0 and {orderedColumnItems.Count - 1} for this column.");
+
+        if (existingIndex == newPosition)
+            return;
+
+        var now = DateTime.UtcNow;
+
+        orderedColumnItems.RemoveAt(existingIndex);
+        orderedColumnItems.Insert(newPosition, item);
+
+        var changedItems = new List<(WorkItem Item, int OldOrder, int NewOrder)>();
+        NormalizeColumnBoardOrder(orderedColumnItems, now, changedItems);
+
+        if (changedItems.Count == 0)
+            return;
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            foreach (var changed in changedItems)
+            {
+                await _repo.AddHistoryAsync(new WorkItemHistory
+                {
+                    WorkItemID = changed.Item.WorkItemID,
+                    FieldChanged = "BoardOrder",
+                    OldValue = changed.OldOrder.ToString(),
+                    NewValue = changed.NewOrder.ToString(),
+                    ChangedAt = now,
+                    ChangedBy = userId
+                }, ct);
+            }
+
+            await _repo.SaveAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await tx.RollbackAsync(ct);
+            throw new InvalidOperationException("The board was updated by another user. Refresh and try again.");
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
 
         await _audit.LogAsync(
             userId,
@@ -240,7 +384,7 @@ public class BoardService : IBoardService
             "WorkItem",
             item.WorkItemID,
             true,
-            $"Reordered WorkItemID={item.WorkItemID} from BoardOrder={oldPosition} to BoardOrder={newPosition}; SprintID={item.SprintID}",
+            $"Reordered WorkItemID={item.WorkItemID} within Status={item.Status}; NewPosition={newPosition}; AffectedCount={changedItems.Count}; SprintID={item.SprintID}",
             string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
             ct
         );
@@ -273,6 +417,25 @@ public class BoardService : IBoardService
             TotalStoryPoints = 0,
             CompletedStoryPoints = 0
         };
+    }
+
+    private static void NormalizeColumnBoardOrder(
+        List<WorkItem> items,
+        DateTime now,
+        List<(WorkItem Item, int OldOrder, int NewOrder)> changedItems)
+    {
+        for (var i = 0; i < items.Count; i++)
+        {
+            var workItem = items[i];
+            var oldOrder = workItem.BoardOrder;
+
+            if (oldOrder != i)
+            {
+                workItem.BoardOrder = i;
+                workItem.UpdatedAt = now;
+                changedItems.Add((workItem, oldOrder, i));
+            }
+        }
     }
 
     private static List<WorkItemBoardDto> BuildColumn(
@@ -318,6 +481,18 @@ public class BoardService : IBoardService
             "CreatedDate" => descending
                 ? items.OrderByDescending(w => w.CreatedAt).ThenBy(w => w.BoardOrder)
                 : items.OrderBy(w => w.CreatedAt).ThenBy(w => w.BoardOrder),
+
+            "UpdatedDate" => descending
+                ? items.OrderByDescending(w => w.UpdatedAt).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt)
+                : items.OrderBy(w => w.UpdatedAt).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt),
+
+            "Title" => descending
+                ? items.OrderByDescending(w => w.Title ?? string.Empty).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt)
+                : items.OrderBy(w => w.Title ?? string.Empty).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt),
+
+            "Assignee" => descending
+                ? items.OrderByDescending(w => w.AssignedUserID.HasValue).ThenByDescending(w => w.AssignedUserID).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt)
+                : items.OrderBy(w => w.AssignedUserID.HasValue ? 0 : 1).ThenBy(w => w.AssignedUserID).ThenBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt),
 
             _ => items.OrderBy(w => w.BoardOrder).ThenBy(w => w.CreatedAt)
         };
@@ -404,6 +579,10 @@ public class BoardService : IBoardService
             "due-date" => "DueDate",
             "createddate" => "CreatedDate",
             "created-date" => "CreatedDate",
+            "updateddate" => "UpdatedDate",
+            "updated-date" => "UpdatedDate",
+            "title" => "Title",
+            "assignee" => "Assignee",
             _ => null
         };
     }

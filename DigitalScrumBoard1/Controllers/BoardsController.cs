@@ -89,15 +89,34 @@ public class BoardsController : ControllerBase
 
         var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
-        await _service.MoveWorkItemAsync(
-            id,
-            req.NewStatus,
-            userId,
-            role,
-            ipAddress,
-            ct);
+        try
+        {
+            await _service.MoveWorkItemAsync(
+                id,
+                req.NewStatus,
+                userId,
+                role,
+                ipAddress,
+                ct);
 
-        return Ok(new { message = "Work item moved successfully." });
+            return Ok(new { message = "Work item moved successfully." });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     [HttpPatch("workitems/{id:int}/reorder")]

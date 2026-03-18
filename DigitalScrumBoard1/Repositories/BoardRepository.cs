@@ -36,6 +36,22 @@ public class BoardRepository : IBoardRepository
             .ToListAsync(ct);
     }
 
+    public async Task<List<WorkItem>> GetTrackedColumnWorkItemsAsync(
+        int sprintId,
+        string status,
+        CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .Where(w =>
+                w.SprintID == sprintId &&
+                !w.IsDeleted &&
+                w.Status == status)
+            .OrderBy(w => w.BoardOrder)
+            .ThenBy(w => w.CreatedAt)
+            .ThenBy(w => w.WorkItemID)
+            .ToListAsync(ct);
+    }
+
     public async Task<List<ActiveBoardDto>> GetActiveBoardsAsync(CancellationToken ct)
     {
         return await _db.Sprints

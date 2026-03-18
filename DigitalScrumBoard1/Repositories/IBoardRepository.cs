@@ -11,6 +11,11 @@ public interface IBoardRepository
 
     Task<List<WorkItem>> GetSprintWorkItemsAsync(int sprintId, CancellationToken ct);
 
+    Task<List<WorkItem>> GetTrackedColumnWorkItemsAsync(
+        int sprintId,
+        string status,
+        CancellationToken ct);
+
     Task<List<ActiveBoardDto>> GetActiveBoardsAsync(CancellationToken ct);
 
     Task SaveAsync(CancellationToken ct);
