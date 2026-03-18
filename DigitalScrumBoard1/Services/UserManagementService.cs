@@ -431,17 +431,20 @@ namespace DigitalScrumBoard1.Services
             }
 
             var changes = new List<string>();
+            var notificationParts = new List<string>();
 
             if (hasRole && user.RoleID != req.RoleID!.Value)
             {
                 user.RoleID = req.RoleID.Value;
                 changes.Add($"RoleID:{oldRoleId}->{req.RoleID.Value}");
+                notificationParts.Add($"your role was changed from '{oldRoleName ?? "Unknown"}' to '{newRole?.RoleName ?? "Unknown"}'");
             }
 
             if (hasTeam && user.TeamID != req.TeamID!.Value)
             {
                 user.TeamID = req.TeamID.Value;
                 changes.Add($"TeamID:{oldTeamId}->{req.TeamID.Value}");
+                notificationParts.Add($"your team was changed from '{oldTeamName ?? "None"}' to '{newTeam?.TeamName ?? "None"}'");
             }
 
             if (changes.Count == 0)
@@ -459,6 +462,19 @@ namespace DigitalScrumBoard1.Services
             }
 
             user.UpdatedAt = DateTime.UtcNow;
+
+            if (user.UserID != actorUserId)
+            {
+                _db.Notifications.Add(new Notification
+                {
+                    UserID = user.UserID,
+                    NotificationType = "UserAccessUpdated",
+                    Message = $"{string.Join(" and ", notificationParts)}.",
+                    CreatedAt = DateTime.UtcNow,
+                    IsRead = false
+                });
+            }
+
             await _db.SaveChangesAsync(ct);
 
             var effectiveRoleName = newRole?.RoleName ?? oldRoleName ?? string.Empty;

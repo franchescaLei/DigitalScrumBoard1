@@ -98,8 +98,10 @@ builder.Services.AddCors(options =>
               .AllowCredentials()
     );
 });
-//SignalR
+
+// SignalR
 builder.Services.AddSignalR();
+
 // Email options + sender
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
@@ -115,6 +117,10 @@ builder.Services.AddScoped<ILookupService, LookupService>();
 builder.Services.AddScoped<ISprintRepository, SprintRepository>();
 builder.Services.AddScoped<IBoardRepository, BoardRepository>();
 builder.Services.AddScoped<IBoardService, BoardService>();
+
+// Notifications module
+builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
 
 var app = builder.Build();
 
@@ -226,6 +232,7 @@ using (var scope = app.Services.CreateScope())
     await RoleSeeder.SeedRolesAsync(context);
     await AdminUserSeeder.SeedAdminAsync(context);
 }
+
 app.MapHub<BoardHub>("/hubs/boards");
 
 app.Run();

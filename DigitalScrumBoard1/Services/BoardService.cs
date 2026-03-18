@@ -219,12 +219,12 @@ public class BoardService : IBoardService
                 }, ct);
             }
 
-            if (item.AssignedUserID.HasValue)
+            if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
             {
                 await _repo.AddNotificationAsync(new Notification
                 {
                     UserID = item.AssignedUserID.Value,
-                    Message = $"Work item '{item.Title}' moved from {oldStatus} to {normalizedStatus}",
+                    Message = $"Work item '{item.Title}' was moved from {oldStatus} to {normalizedStatus}.",
                     NotificationType = "StatusChanged",
                     RelatedWorkItemID = item.WorkItemID,
                     CreatedAt = now,

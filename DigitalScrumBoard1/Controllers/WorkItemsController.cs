@@ -36,11 +36,10 @@ public sealed class WorkItemsController : ControllerBase
 
         var title = (req.Title ?? "").Trim();
         var desc = (req.Description ?? "").Trim();
-        var priority = (req.Priority ?? "").Trim();
-
+        var priority = NormalizePriority(req.Priority);
         if (title.Length == 0) return BadRequest(new { message = "Title is required." });
         if (desc.Length == 0) return BadRequest(new { message = "Description is required." });
-        if (priority.Length == 0) return BadRequest(new { message = "Priority is required." });
+        if (priority is null) return BadRequest(new { message = "Invalid Priority. Allowed: Low, Medium, High, Critical." });
 
         var userId = TryGetUserId(User);
         if (userId is null)
@@ -102,6 +101,20 @@ public sealed class WorkItemsController : ControllerBase
                 break;
         }
 
+        if (req.TeamID.HasValue)
+        {
+            var teamExists = await _repo.TeamExistsAsync(req.TeamID.Value, ct);
+            if (!teamExists)
+                return BadRequest(new { message = "Team not found." });
+        }
+
+        if (req.AssignedUserID.HasValue)
+        {
+            var assigneeExists = await _repo.UserExistsAsync(req.AssignedUserID.Value, ct);
+            if (!assigneeExists)
+                return BadRequest(new { message = "Assigned user not found." });
+        }
+
         var now = DateTime.UtcNow;
 
         var item = new WorkItem
@@ -136,6 +149,24 @@ public sealed class WorkItemsController : ControllerBase
         };
 
         await _repo.AddWithAuditAsync(item, audit, ct);
+
+        if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId.Value)
+        {
+            await _repo.AddNotificationsAsync(new[]
+            {
+                new Notification
+                {
+                    UserID = item.AssignedUserID.Value,
+                    NotificationType = "WorkItemAssigned",
+                    Message = $"You were assigned to work item '{item.Title}'.",
+                    RelatedWorkItemID = item.WorkItemID,
+                    CreatedAt = now,
+                    IsRead = false
+                }
+            }, ct);
+
+            await _repo.SaveChangesAsync(ct);
+        }
 
         var resp = new WorkItemCreatedResponseDto
         {
@@ -186,7 +217,6 @@ public sealed class WorkItemsController : ControllerBase
             : new[] { epicTypeId.Value, storyTypeId.Value };
 
         var parents = await _repo.ListParentsAsync(allowed, ct);
-
         var resp = parents.Select(p => new { p.WorkItemID, p.Title, Type = p.TypeName }).ToList();
         return Ok(resp);
     }
@@ -240,7 +270,7 @@ public sealed class WorkItemsController : ControllerBase
             return BadRequest(new { message = "Only Story or Task work items can be assigned to a sprint." });
         }
 
-        var workItem = await _repo.GetByIdAsync(id, ct);
+        var workItem = await _repo.GetTrackedByIdAsync(id, ct);
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
@@ -258,6 +288,25 @@ public sealed class WorkItemsController : ControllerBase
             return Forbid();
 
         await _repo.AssignToSprintAsync(workItem, req.SprintID, ct);
+
+        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            await _repo.AddNotificationsAsync(new[]
+            {
+                new Notification
+                {
+                    UserID = workItem.AssignedUserID.Value,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = req.SprintID,
+                    NotificationType = "WorkItemAssignedToSprint",
+                    Message = $"Work item '{workItem.Title}' was added to sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTime.UtcNow,
+                    IsRead = false
+                }
+            }, ct);
+
+            await _repo.SaveChangesAsync(ct);
+        }
 
         return Ok(new
         {
@@ -294,7 +343,7 @@ public sealed class WorkItemsController : ControllerBase
             return BadRequest(new { message = "Only Story or Task work items can be removed from a sprint." });
         }
 
-        var workItem = await _repo.GetByIdAsync(id, ct);
+        var workItem = await _repo.GetTrackedByIdAsync(id, ct);
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
@@ -309,7 +358,6 @@ public sealed class WorkItemsController : ControllerBase
             return Forbid();
 
         var oldSprintId = workItem.SprintID;
-
         await _repo.RemoveFromSprintAsync(workItem, ct);
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -324,6 +372,24 @@ public sealed class WorkItemsController : ControllerBase
             ip,
             ct
         );
+
+        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            await _repo.AddNotificationsAsync(new[]
+            {
+                new Notification
+                {
+                    UserID = workItem.AssignedUserID.Value,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    NotificationType = "WorkItemRemovedFromSprint",
+                    Message = $"Work item '{workItem.Title}' was removed from sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTime.UtcNow,
+                    IsRead = false
+                }
+            }, ct);
+
+            await _repo.SaveChangesAsync(ct);
+        }
 
         return Ok(new
         {
@@ -645,16 +711,40 @@ public sealed class WorkItemsController : ControllerBase
             userId.Value,
             oldAssignedUserId);
 
-        await _repo.AddNotificationsAsync(
-            relatedUserIds.Select(targetUserId => new Notification
+        var notifications = new List<Notification>();
+
+        if (oldAssignedUserId != workItem.AssignedUserID && workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            notifications.Add(new Notification
+            {
+                UserID = workItem.AssignedUserID.Value,
+                Message = $"You were assigned to work item '{workItem.Title}'.",
+                NotificationType = "WorkItemAssigned",
+                RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = workItem.SprintID,
+                CreatedAt = now,
+                IsRead = false
+            });
+        }
+
+        foreach (var targetUserId in relatedUserIds)
+        {
+            notifications.Add(new Notification
             {
                 UserID = targetUserId,
                 Message = $"Work item '{workItem.Title}' was updated.",
                 NotificationType = "WorkItemUpdated",
                 RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = workItem.SprintID,
                 CreatedAt = now,
                 IsRead = false
-            }),
+            });
+        }
+
+        await _repo.AddNotificationsAsync(
+            notifications
+                .GroupBy(x => new { x.UserID, x.NotificationType, x.Message, x.RelatedWorkItemID, x.RelatedSprintID })
+                .Select(g => g.First()),
             ct);
 
         await _repo.SaveChangesAsync(ct);
@@ -734,6 +824,7 @@ public sealed class WorkItemsController : ControllerBase
 
         var now = DateTime.UtcNow;
         workItem.IsDeleted = true;
+        workItem.DeletedAt = now;
         workItem.UpdatedAt = now;
 
         await _repo.AddHistoryAsync(
@@ -753,6 +844,7 @@ public sealed class WorkItemsController : ControllerBase
                 Message = $"Work item '{workItem.Title}' was archived.",
                 NotificationType = "WorkItemArchived",
                 RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = workItem.SprintID,
                 CreatedAt = now,
                 IsRead = false
             }),
