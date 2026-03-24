@@ -20,7 +20,7 @@ public sealed class WorkItemDetailsResponseDto
     public int? AssignedUserID { get; set; }
     public string? AssignedUserName { get; set; }
 
-    // Children
+    public List<WorkItemCommentDto> Comments { get; set; } = new();
     public List<WorkItemChildDto> Stories { get; set; } = new();
     public List<WorkItemChildDto> Tasks { get; set; } = new();
 }

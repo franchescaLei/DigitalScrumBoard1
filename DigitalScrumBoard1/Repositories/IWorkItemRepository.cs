@@ -45,4 +45,8 @@ public interface IWorkItemRepository
     Task AddHistoryAsync(WorkItemHistory history, CancellationToken ct);
 
     Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct);
+
+    Task<List<WorkItemCommentDto>> GetCommentsAsync(int workItemId, CancellationToken ct);
+
+    Task AddCommentAsync(WorkItemComment comment, CancellationToken ct);
 }

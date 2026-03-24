@@ -315,6 +315,8 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 }).ToListAsync(ct);
         }
 
+        dto.Comments = await GetCommentsAsync(workItemId, ct);
+
         return dto;
     }
 
@@ -475,5 +477,30 @@ public sealed class WorkItemRepository : IWorkItemRepository
             return;
 
         await _db.Notifications.AddRangeAsync(items, ct);
+    }
+
+    public async Task<List<WorkItemCommentDto>> GetCommentsAsync(int workItemId, CancellationToken ct)
+    {
+        return await (
+            from c in _db.WorkItemComments.AsNoTracking()
+            join u in _db.Users.AsNoTracking() on c.CommentedBy equals u.UserID
+            where c.WorkItemID == workItemId && !c.IsDeleted
+            orderby c.CreatedAt ascending, c.CommentID ascending
+            select new WorkItemCommentDto
+            {
+                CommentID = c.CommentID,
+                WorkItemID = c.WorkItemID,
+                CommentedBy = c.CommentedBy,
+                CommentedByName = (u.FirstName + " " + u.LastName).Trim(),
+                CommentText = c.CommentText,
+                CreatedAt = c.CreatedAt,
+                UpdatedAt = c.UpdatedAt
+            })
+            .ToListAsync(ct);
+    }
+
+    public async Task AddCommentAsync(WorkItemComment comment, CancellationToken ct)
+    {
+        await _db.WorkItemComments.AddAsync(comment, ct);
     }
 }

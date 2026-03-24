@@ -1,9 +1,11 @@
 ﻿using DigitalScrumBoard1.DTOs.WorkItems;
+using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
 using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 
 namespace DigitalScrumBoard1.Controllers;
@@ -14,11 +16,16 @@ public sealed class WorkItemsController : ControllerBase
 {
     private readonly IWorkItemRepository _repo;
     private readonly IAuditService _audit;
+    private readonly IHubContext<BoardHub> _hub;
 
-    public WorkItemsController(IWorkItemRepository repo, IAuditService audit)
+    public WorkItemsController(
+        IWorkItemRepository repo,
+        IAuditService audit,
+        IHubContext<BoardHub> hub)
     {
         _repo = repo;
         _audit = audit;
+        _hub = hub;
     }
 
     [HttpPost]
@@ -198,6 +205,159 @@ public sealed class WorkItemsController : ControllerBase
     {
         var details = await _repo.GetWorkItemDetailsAsync(id, ct);
         return details is null ? NotFound(new { message = "Work item not found." }) : Ok(details);
+    }
+
+    [HttpGet("{id:int}/comments")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<ActionResult<List<WorkItemCommentDto>>> GetComments([FromRoute] int id, CancellationToken ct)
+    {
+        var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
+        if (itemInfo is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (itemInfo.Value.IsDeleted)
+            return BadRequest(new { message = "Cannot access comments of a deleted work item." });
+
+        var comments = await _repo.GetCommentsAsync(id, ct);
+        return Ok(comments);
+    }
+
+    [HttpPost("{id:int}/comments")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<ActionResult<WorkItemCommentDto>> AddComment(
+        [FromRoute] int id,
+        [FromBody] CreateWorkItemCommentRequestDto req,
+        CancellationToken ct)
+    {
+        if (!ModelState.IsValid)
+            return ValidationProblem(ModelState);
+
+        if (req is null || string.IsNullOrWhiteSpace(req.CommentText))
+            return BadRequest(new { message = "CommentText is required." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        var itemInfo = await _repo.GetWorkItemTypeInfoByIdAsync(id, ct);
+        if (itemInfo is null)
+            return NotFound(new { message = "Work item not found." });
+
+        if (itemInfo.Value.IsDeleted)
+            return BadRequest(new { message = "Cannot comment on a deleted work item." });
+
+        var workItem = await _repo.GetTrackedByIdAsync(id, ct);
+        if (workItem is null)
+            return NotFound(new { message = "Work item not found." });
+
+        int? sprintManagerId = null;
+        var canComment = CanManageWorkItem(userId.Value, workItem.AssignedUserID);
+
+        if (!canComment && workItem.SprintID.HasValue)
+        {
+            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+            sprintManagerId = sprint?.ManagedBy;
+            canComment = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
+        }
+        else if (workItem.SprintID.HasValue)
+        {
+            sprintManagerId = await _repo.GetSprintManagerUserIdAsync(workItem.SprintID.Value, ct);
+        }
+
+        if (!canComment)
+            return Forbid();
+
+        var text = req.CommentText.Trim();
+        if (text.Length == 0)
+            return BadRequest(new { message = "CommentText cannot be empty." });
+
+        var now = DateTime.UtcNow;
+
+        var comment = new WorkItemComment
+        {
+            WorkItemID = workItem.WorkItemID,
+            CommentedBy = userId.Value,
+            CommentText = text,
+            CreatedAt = now,
+            UpdatedAt = now,
+            IsDeleted = false
+        };
+
+        await _repo.AddCommentAsync(comment, ct);
+
+        var relatedUserIds = BuildRelatedUserIds(
+            workItem,
+            sprintManagerId,
+            userId.Value,
+            null);
+
+        await _repo.AddNotificationsAsync(
+            relatedUserIds.Select(targetUserId => new Notification
+            {
+                UserID = targetUserId,
+                Message = $"A new comment was added to work item '{workItem.Title}'.",
+                NotificationType = "WorkItemCommentAdded",
+                RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = workItem.SprintID,
+                CreatedAt = now,
+                IsRead = false
+            }),
+            ct);
+
+        await _repo.SaveChangesAsync(ct);
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        await _audit.LogAsync(
+            userId.Value,
+            "WorkItem.Comment",
+            "WorkItem",
+            workItem.WorkItemID,
+            true,
+            $"Added comment to WorkItemID={workItem.WorkItemID}; CommentID={comment.CommentID}",
+            ip,
+            ct
+        );
+
+        var comments = await _repo.GetCommentsAsync(workItem.WorkItemID, ct);
+        var created = comments.FirstOrDefault(c => c.CommentID == comment.CommentID);
+
+        if (created is null)
+        {
+            created = new WorkItemCommentDto
+            {
+                CommentID = comment.CommentID,
+                WorkItemID = comment.WorkItemID,
+                CommentedBy = comment.CommentedBy,
+                CommentedByName = string.Empty,
+                CommentText = comment.CommentText,
+                CreatedAt = comment.CreatedAt,
+                UpdatedAt = comment.UpdatedAt
+            };
+        }
+
+        if (workItem.SprintID.HasValue)
+        {
+            await _hub.Clients
+                .Group($"sprint-{workItem.SprintID.Value}")
+                .SendAsync("WorkItemCommentAdded", new
+                {
+                    sprintID = workItem.SprintID.Value,
+                    workItemID = workItem.WorkItemID,
+                    comment = created
+                }, ct);
+        }
+        else
+        {
+            await _hub.Clients.All.SendAsync("WorkItemCommentAdded", new
+            {
+                sprintID = (int?)null,
+                workItemID = workItem.WorkItemID,
+                comment = created
+            }, ct);
+        }
+
+        return Ok(created);
     }
 
     [HttpGet("parents")]

@@ -1,22 +1,24 @@
-﻿using Microsoft.AspNetCore.SignalR;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
 
 namespace DigitalScrumBoard1.Hubs;
 
-public class BoardHub : Hub
+[Authorize(AuthenticationSchemes = "MyCookieAuth")]
+public sealed class BoardHub : Hub
 {
-    public async Task JoinSprintGroup(int sprintId)
+    public Task JoinSprintBoard(int sprintId)
     {
-        await Groups.AddToGroupAsync(
-            Context.ConnectionId,
-            $"sprint-{sprintId}"
-        );
+        if (sprintId <= 0)
+            throw new HubException("SprintID must be greater than 0.");
+
+        return Groups.AddToGroupAsync(Context.ConnectionId, $"sprint-{sprintId}");
     }
 
-    public async Task LeaveSprintGroup(int sprintId)
+    public Task LeaveSprintBoard(int sprintId)
     {
-        await Groups.RemoveFromGroupAsync(
-            Context.ConnectionId,
-            $"sprint-{sprintId}"
-        );
+        if (sprintId <= 0)
+            throw new HubException("SprintID must be greater than 0.");
+
+        return Groups.RemoveFromGroupAsync(Context.ConnectionId, $"sprint-{sprintId}");
     }
 }
