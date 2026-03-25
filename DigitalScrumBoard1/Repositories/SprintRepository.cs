@@ -216,4 +216,93 @@ public sealed class SprintRepository : ISprintRepository
             throw;
         }
     }
+
+    public async Task<(List<object> Items, int Total)> GetPagedAsync(
+        string? status,
+        int? teamId,
+        int? managedBy,
+        DateOnly? from,
+        DateOnly? to,
+        string? search,
+        string? sortBy,
+        string? sortDirection,
+        int page,
+        int pageSize,
+        CancellationToken ct)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1) pageSize = 1;
+        if (pageSize > 200) pageSize = 200;
+
+        var q = _db.Sprints.AsNoTracking().AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var normalizedStatus = status.Trim();
+            q = q.Where(s => s.Status == normalizedStatus);
+        }
+
+        if (teamId.HasValue)
+            q = q.Where(s => s.TeamID == teamId.Value);
+
+        if (managedBy.HasValue)
+            q = q.Where(s => s.ManagedBy == managedBy.Value);
+
+        if (from.HasValue)
+            q = q.Where(s => s.StartDate >= from.Value);
+
+        if (to.HasValue)
+            q = q.Where(s => s.EndDate <= to.Value);
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim().ToLowerInvariant();
+            q = q.Where(t =>
+                t.SprintName.ToLower().Contains(s) ||
+                (t.Goal != null && t.Goal.ToLower().Contains(s)));
+        }
+
+        q = ApplySprintSorting(q, sortBy, sortDirection);
+
+        var total = await q.CountAsync(ct);
+
+        var items = await q
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(s => new
+            {
+                s.SprintID,
+                s.SprintName,
+                s.Goal,
+                s.StartDate,
+                s.EndDate,
+                s.Status,
+                s.ManagedBy,
+                s.TeamID,
+                s.CreatedAt,
+                s.UpdatedAt
+            })
+            .ToListAsync(ct);
+
+        return (items.Cast<object>().ToList(), total);
+    }
+
+    private static IQueryable<Sprint> ApplySprintSorting(
+        IQueryable<Sprint> q,
+        string? sortBy,
+        string? sortDirection)
+    {
+        var descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+
+        return sortBy?.Trim() switch
+        {
+            "SprintName" => descending ? q.OrderByDescending(s => s.SprintName) : q.OrderBy(s => s.SprintName),
+            "StartDate" => descending ? q.OrderByDescending(s => s.StartDate) : q.OrderBy(s => s.StartDate),
+            "EndDate" => descending ? q.OrderByDescending(s => s.EndDate) : q.OrderBy(s => s.EndDate),
+            "Status" => descending ? q.OrderByDescending(s => s.Status).ThenBy(s => s.SprintName) : q.OrderBy(s => s.Status).ThenBy(s => s.SprintName),
+            "CreatedAt" => descending ? q.OrderByDescending(s => s.CreatedAt) : q.OrderBy(s => s.CreatedAt),
+            "UpdatedAt" => descending ? q.OrderByDescending(s => s.UpdatedAt) : q.OrderBy(s => s.UpdatedAt),
+            _ => q.OrderByDescending(s => s.SprintID)
+        };
+    }
 }

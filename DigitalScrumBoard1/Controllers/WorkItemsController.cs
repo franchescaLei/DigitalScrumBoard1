@@ -29,7 +29,7 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<ActionResult<WorkItemCreatedResponseDto>> Create(
         [FromBody] CreateWorkItemRequestDto req,
         CancellationToken ct)
@@ -187,6 +187,13 @@ public sealed class WorkItemsController : ControllerBase
             TeamID = item.TeamID,
             AssignedUserID = item.AssignedUserID
         };
+
+        // Broadcast work item creation to all clients (for backlog/epic views)
+        await _hub.Clients.All.SendAsync("WorkItemCreated", new
+        {
+            workItem = resp,
+            createdAt = item.CreatedAt
+        }, ct);
 
         return CreatedAtAction(nameof(GetById), new { id = item.WorkItemID }, resp);
     }
@@ -383,17 +390,37 @@ public sealed class WorkItemsController : ControllerBase
 
     [HttpGet("epics")]
     [Authorize]
-    public async Task<ActionResult<List<EpicTileDto>>> GetEpicTiles(CancellationToken ct)
+    public async Task<ActionResult<List<EpicTileDto>>> GetEpicTiles(
+        [FromQuery] string? search,
+        [FromQuery] string? sortBy,
+        [FromQuery] string? sortDirection,
+        CancellationToken ct = default)
     {
-        var result = await _repo.GetEpicTilesAsync(ct);
+        var result = await _repo.GetEpicTilesFilteredAsync(search, sortBy, sortDirection, ct);
         return Ok(result);
     }
 
     [HttpGet("agendas")]
     [Authorize]
-    public async Task<ActionResult<AgendasResponseDto>> GetAgendas(CancellationToken ct)
+    public async Task<ActionResult<AgendasResponseDto>> GetAgendas(
+        [FromQuery] string? status,
+        [FromQuery] string? priority,
+        [FromQuery] string? workItemType,
+        [FromQuery] int? teamId,
+        [FromQuery] int? assigneeId,
+        [FromQuery] string? sortBy,
+        [FromQuery] string? sortDirection,
+        CancellationToken ct = default)
     {
-        var result = await _repo.GetAgendasAsync(ct);
+        var result = await _repo.GetAgendasFilteredAsync(
+            status,
+            priority,
+            workItemType,
+            teamId,
+            assigneeId,
+            sortBy,
+            sortDirection,
+            ct);
         return Ok(result);
     }
 
@@ -467,6 +494,18 @@ public sealed class WorkItemsController : ControllerBase
 
             await _repo.SaveChangesAsync(ct);
         }
+
+        // Broadcast sprint assignment to sprint group for real-time board update
+        await _hub.Clients.Group($"sprint-{req.SprintID}").SendAsync("WorkItemAssignedToSprint", new
+        {
+            workItemID = workItem.WorkItemID,
+            title = workItem.Title,
+            status = workItem.Status,
+            assignedUserID = workItem.AssignedUserID,
+            sprintID = req.SprintID,
+            sprintName = sprint.SprintName,
+            changedAt = DateTime.UtcNow
+        }, ct);
 
         return Ok(new
         {
@@ -551,6 +590,19 @@ public sealed class WorkItemsController : ControllerBase
             await _repo.SaveChangesAsync(ct);
         }
 
+        // Broadcast sprint removal to old sprint group for real-time board update
+        if (oldSprintId.HasValue)
+        {
+            await _hub.Clients.Group($"sprint-{oldSprintId.Value}").SendAsync("WorkItemRemovedFromSprint", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                oldSprintID = oldSprintId.Value,
+                oldSprintName = sprint.SprintName,
+                changedAt = DateTime.UtcNow
+            }, ct);
+        }
+
         return Ok(new
         {
             message = "Work item removed from sprint successfully.",
@@ -626,6 +678,20 @@ public sealed class WorkItemsController : ControllerBase
             ct
         );
 
+        // Broadcast status change to sprint group for real-time board update
+        if (workItem.SprintID.HasValue)
+        {
+            await _hub.Clients.Group($"sprint-{workItem.SprintID.Value}").SendAsync("WorkItemStatusChanged", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                oldStatus,
+                newStatus = workItem.Status,
+                sprintID = workItem.SprintID.Value,
+                changedAt = workItem.UpdatedAt
+            }, ct);
+        }
+
         return Ok(new
         {
             message = "Work item status updated successfully.",
@@ -636,7 +702,7 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPatch("{id:int}")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<IActionResult> Patch(
         [FromRoute] int id,
         [FromBody] UpdateWorkItemRequestDto req,
@@ -679,12 +745,6 @@ public sealed class WorkItemsController : ControllerBase
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
-        var requestedRestrictedFieldChange =
-            req.ParentWorkItemID.HasValue ||
-            req.TeamID.HasValue ||
-            req.AssignedUserID.HasValue;
-
-        var isAssignedUser = workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value == userId.Value;
         var isElevated = IsElevatedWorkItemRole();
 
         int? sprintManagerId = null;
@@ -694,13 +754,10 @@ public sealed class WorkItemsController : ControllerBase
         {
             var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
             sprintManagerId = sprint?.ManagedBy;
-            isSprintManager = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy) && !isElevated;
+            isSprintManager = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
         }
 
-        var canEditSafeFields = isElevated || isAssignedUser || isSprintManager;
-        var canEditRestrictedFields = isElevated || isSprintManager;
-
-        if (!canEditSafeFields)
+        if (!isElevated && !isSprintManager)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -709,21 +766,6 @@ public sealed class WorkItemsController : ControllerBase
                 workItem.WorkItemID,
                 false,
                 $"Unauthorized update attempt for WorkItemID={workItem.WorkItemID}",
-                ip,
-                ct);
-
-            return Forbid();
-        }
-
-        if (requestedRestrictedFieldChange && !canEditRestrictedFields)
-        {
-            await _audit.LogAsync(
-                userId.Value,
-                "WorkItem.Update",
-                "WorkItem",
-                workItem.WorkItemID,
-                false,
-                $"Unauthorized restricted-field update attempt for WorkItemID={workItem.WorkItemID}",
                 ip,
                 ct);
 
@@ -919,6 +961,37 @@ public sealed class WorkItemsController : ControllerBase
             ip,
             ct);
 
+        // Broadcast update to sprint group for real-time board update
+        if (workItem.SprintID.HasValue)
+        {
+            await _hub.Clients.Group($"sprint-{workItem.SprintID.Value}").SendAsync("WorkItemUpdated", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                status = workItem.Status,
+                assignedUserID = workItem.AssignedUserID,
+                priority = workItem.Priority,
+                sprintID = workItem.SprintID.Value,
+                changedFields,
+                changedAt = workItem.UpdatedAt
+            }, ct);
+        }
+        else
+        {
+            // For backlog items, broadcast to all (for backlog view updates)
+            await _hub.Clients.All.SendAsync("WorkItemUpdated", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                status = workItem.Status,
+                assignedUserID = workItem.AssignedUserID,
+                priority = workItem.Priority,
+                sprintID = (int?)null,
+                changedFields,
+                changedAt = workItem.UpdatedAt
+            }, ct);
+        }
+
         return Ok(new
         {
             message = "Work item updated successfully.",
@@ -927,7 +1000,7 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpDelete("{id:int}")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
     public async Task<IActionResult> SoftDelete([FromRoute] int id, CancellationToken ct)
     {
         if (id <= 0)
@@ -1021,6 +1094,28 @@ public sealed class WorkItemsController : ControllerBase
             $"Soft deleted WorkItemID={workItem.WorkItemID}; Title={workItem.Title}",
             ip,
             ct);
+
+        // Broadcast delete to sprint group or all clients for real-time UI update
+        if (workItem.SprintID.HasValue)
+        {
+            await _hub.Clients.Group($"sprint-{workItem.SprintID.Value}").SendAsync("WorkItemDeleted", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                sprintID = workItem.SprintID.Value,
+                deletedAt = now
+            }, ct);
+        }
+        else
+        {
+            await _hub.Clients.All.SendAsync("WorkItemDeleted", new
+            {
+                workItemID = workItem.WorkItemID,
+                title = workItem.Title,
+                sprintID = (int?)null,
+                deletedAt = now
+            }, ct);
+        }
 
         return Ok(new
         {

@@ -253,6 +253,12 @@ public partial class DigitalScrumBoardContext : DbContext
 
             e.Property(x => x.TargetType).HasMaxLength(50);
 
+            // Indexes for common query patterns
+            e.HasIndex(x => x.Timestamp);
+            e.HasIndex(x => x.UserID);
+            e.HasIndex(x => new { x.UserID, x.Timestamp });
+            e.HasIndex(x => x.TargetType);
+
             e.HasOne(x => x.User)
                 .WithMany()
                 .HasForeignKey(x => x.UserID)
@@ -316,6 +322,17 @@ public partial class DigitalScrumBoardContext : DbContext
 
             e.Property(x => x.IsDeleted).HasDefaultValue(false).IsRequired();
 
+            // Indexes for common query patterns
+            e.HasIndex(x => x.SprintID);
+            e.HasIndex(x => x.AssignedUserID);
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => new { x.SprintID, x.Status });
+            e.HasIndex(x => new { x.SprintID, x.BoardOrder });
+            e.HasIndex(x => x.ParentWorkItemID);
+            e.HasIndex(x => x.WorkItemTypeID);
+            e.HasIndex(x => x.TeamID);
+            e.HasIndex(x => x.CreatedAt);
+
             e.HasOne(x => x.ParentWorkItem)
                 .WithMany()
                 .HasForeignKey(x => x.ParentWorkItemID)
@@ -358,6 +375,10 @@ public partial class DigitalScrumBoardContext : DbContext
             e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
             e.Property(x => x.IsDeleted).HasDefaultValue(false).IsRequired();
 
+            // Indexes for common query patterns
+            e.HasIndex(x => x.WorkItemID);
+            e.HasIndex(x => new { x.WorkItemID, x.CreatedAt });
+
             e.HasOne(x => x.WorkItem)
                 .WithMany()
                 .HasForeignKey(x => x.WorkItemID)
@@ -378,6 +399,11 @@ public partial class DigitalScrumBoardContext : DbContext
 
             e.Property(x => x.FieldChanged).HasMaxLength(50).IsRequired();
             e.Property(x => x.ChangedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+
+            // Indexes for common query patterns
+            e.HasIndex(x => x.WorkItemID);
+            e.HasIndex(x => x.ChangedAt);
+            e.HasIndex(x => new { x.WorkItemID, x.ChangedAt });
 
             e.HasOne(x => x.WorkItem)
                 .WithMany()
@@ -409,6 +435,11 @@ public partial class DigitalScrumBoardContext : DbContext
             e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
             e.Property(x => x.UpdatedAt).IsRequired();
 
+            // Indexes for common query patterns
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => x.ManagedBy);
+            e.HasIndex(x => x.TeamID);
+
             e.HasOne(x => x.Manager)
                 .WithMany()
                 .HasForeignKey(x => x.ManagedBy)
@@ -428,6 +459,12 @@ public partial class DigitalScrumBoardContext : DbContext
             e.Property(x => x.NotificationType).HasMaxLength(50).IsRequired();
             e.Property(x => x.IsRead).HasDefaultValue(false).IsRequired();
             e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+
+            // Indexes for common query patterns
+            e.HasIndex(x => new { x.UserID, x.IsRead });
+            e.HasIndex(x => x.CreatedAt);
+            e.HasIndex(x => x.RelatedWorkItemID);
+            e.HasIndex(x => x.RelatedSprintID);
 
             e.HasOne(x => x.User)
                 .WithMany()

@@ -25,4 +25,6 @@ public sealed class AgendaWorkItemDto
     public string? Priority { get; set; }
     public int? ParentWorkItemID { get; set; }
     public int? SprintID { get; set; }
+    public int? TeamID { get; set; }
+    public int? AssignedUserID { get; set; }
 }

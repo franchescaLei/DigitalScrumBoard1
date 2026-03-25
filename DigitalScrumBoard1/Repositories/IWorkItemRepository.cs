@@ -49,4 +49,20 @@ public interface IWorkItemRepository
     Task<List<WorkItemCommentDto>> GetCommentsAsync(int workItemId, CancellationToken ct);
 
     Task AddCommentAsync(WorkItemComment comment, CancellationToken ct);
+
+    Task<List<EpicTileDto>> GetEpicTilesFilteredAsync(
+        string? search,
+        string? sortBy,
+        string? sortDirection,
+        CancellationToken ct);
+
+    Task<AgendasResponseDto> GetAgendasFilteredAsync(
+        string? status,
+        string? priority,
+        string? workItemType,
+        int? teamId,
+        int? assigneeId,
+        string? sortBy,
+        string? sortDirection,
+        CancellationToken ct);
 }

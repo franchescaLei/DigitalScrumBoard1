@@ -233,6 +233,8 @@ using (var scope = app.Services.CreateScope())
     await AdminUserSeeder.SeedAdminAsync(context);
 }
 
+// SignalR Hubs
 app.MapHub<BoardHub>("/hubs/boards");
+app.MapHub<NotificationHub>("/hubs/notifications");
 
 app.Run();

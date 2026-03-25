@@ -1,4 +1,5 @@
 ﻿using DigitalScrumBoard1.DTOs.Sprints;
+using DigitalScrumBoard1.DTOs.SignalR;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
@@ -104,6 +105,21 @@ public sealed class SprintsController : ControllerBase
             ct
         );
 
+        // Broadcast sprint creation to all clients (for backlog/sprint list views)
+        await _hub.Clients.All.SendAsync("SprintCreated", new SprintBroadcastDto
+        {
+            SprintID = sprint.SprintID,
+            SprintName = sprint.SprintName,
+            Goal = sprint.Goal,
+            StartDate = sprint.StartDate,
+            EndDate = sprint.EndDate,
+            Status = sprint.Status,
+            ManagedBy = sprint.ManagedBy,
+            TeamID = sprint.TeamID,
+            CreatedAt = sprint.CreatedAt,
+            UpdatedAt = sprint.UpdatedAt
+        }, ct);
+
         var resp = new SprintCreatedResponseDto
         {
             SprintID = sprint.SprintID,
@@ -121,25 +137,39 @@ public sealed class SprintsController : ControllerBase
 
     [HttpGet]
     [Authorize(AuthenticationSchemes = "MyCookieAuth")]
-    public async Task<ActionResult<IEnumerable<object>>> GetAll(CancellationToken ct)
+    public async Task<ActionResult<IEnumerable<object>>> GetAll(
+        [FromQuery] string? status,
+        [FromQuery] int? teamId,
+        [FromQuery] int? managedBy,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        [FromQuery] string? search,
+        [FromQuery] string? sortBy,
+        [FromQuery] string? sortDirection,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken ct = default)
     {
-        var sprints = await _repo.GetAllAsync(ct);
+        var result = await _repo.GetPagedAsync(
+            status,
+            teamId,
+            managedBy,
+            from,
+            to,
+            search,
+            sortBy,
+            sortDirection,
+            page,
+            pageSize,
+            ct);
 
-        var response = sprints.Select(s => new
+        return Ok(new
         {
-            sprintID = s.SprintID,
-            sprintName = s.SprintName,
-            goal = s.Goal,
-            startDate = s.StartDate,
-            endDate = s.EndDate,
-            status = s.Status,
-            managedBy = s.ManagedBy,
-            teamID = s.TeamID,
-            createdAt = s.CreatedAt,
-            updatedAt = s.UpdatedAt
+            page,
+            pageSize,
+            total = result.Total,
+            items = result.Items
         });
-
-        return Ok(response);
     }
 
     [HttpGet("{id:int}")]
@@ -318,15 +348,18 @@ public sealed class SprintsController : ControllerBase
             ct
         );
 
-        await _hub.Clients.All.SendAsync("SprintUpdated", new
+        // Broadcast to sprint group instead of all clients
+        await _hub.Clients.Group($"sprint-{sprint.SprintID}").SendAsync("SprintUpdated", new SprintBroadcastDto
         {
-            sprintID = sprint.SprintID,
-            sprintName = sprint.SprintName,
-            goal = sprint.Goal,
-            startDate = sprint.StartDate,
-            endDate = sprint.EndDate,
-            managedBy = sprint.ManagedBy,
-            teamID = sprint.TeamID
+            SprintID = sprint.SprintID,
+            SprintName = sprint.SprintName,
+            Goal = sprint.Goal,
+            StartDate = sprint.StartDate,
+            EndDate = sprint.EndDate,
+            Status = sprint.Status,
+            ManagedBy = sprint.ManagedBy,
+            TeamID = sprint.TeamID,
+            UpdatedAt = sprint.UpdatedAt
         }, ct);
 
         return Ok(new
@@ -426,11 +459,18 @@ public sealed class SprintsController : ControllerBase
 
         await _repo.AddNotificationsAsync(notifications, ct);
 
-        await _hub.Clients.All.SendAsync("SprintStarted", new
+        // Broadcast to sprint group with complete data
+        await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintStarted", new SprintLifecycleBroadcastDto
         {
-            sprintID = id,
-            sprintName = sprint.SprintName,
-            status = "Active"
+            SprintID = id,
+            SprintName = sprint.SprintName,
+            Status = "Active",
+            StartDate = sprint.StartDate,
+            EndDate = sprint.EndDate,
+            Goal = sprint.Goal,
+            ManagedBy = sprint.ManagedBy,
+            TeamID = sprint.TeamID,
+            ChangedAt = DateTime.UtcNow
         }, ct);
 
         return Ok(new
@@ -515,13 +555,20 @@ public sealed class SprintsController : ControllerBase
 
         await _repo.AddNotificationsAsync(notifications, ct);
 
-        await _hub.Clients.All.SendAsync("SprintStopped", new
+        // Broadcast to sprint group with complete data
+        await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintStopped", new SprintLifecycleBroadcastDto
         {
-            sprintID = id,
-            sprintName = sprint.SprintName,
-            unfinishedCount,
-            completedCount,
-            status = "Planned"
+            SprintID = id,
+            SprintName = sprint.SprintName,
+            Status = "Planned",
+            StartDate = sprint.StartDate,
+            EndDate = sprint.EndDate,
+            Goal = sprint.Goal,
+            ManagedBy = sprint.ManagedBy,
+            TeamID = sprint.TeamID,
+            UnfinishedCount = unfinishedCount,
+            CompletedCount = completedCount,
+            ChangedAt = DateTime.UtcNow
         }, ct);
 
         return Ok(new
@@ -612,12 +659,16 @@ public sealed class SprintsController : ControllerBase
 
         await _repo.AddNotificationsAsync(notifications, ct);
 
-        await _hub.Clients.All.SendAsync("SprintCompleted", new
+        // Broadcast to sprint group with complete data
+        await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintCompleted", new SprintLifecycleBroadcastDto
         {
-            sprintID = id,
-            sprintName,
-            returnedToBacklogCount = unfinishedCount,
-            completedRecordCount = completedCount
+            SprintID = id,
+            SprintName = sprintName,
+            Status = "Completed",
+            UnfinishedCount = unfinishedCount,
+            CompletedCount = completedCount,
+            ReturnedToBacklogCount = unfinishedCount,
+            ChangedAt = DateTime.UtcNow
         }, ct);
 
         return Ok(new
@@ -642,10 +693,10 @@ public sealed class SprintsController : ControllerBase
         if (userId is null)
             return Unauthorized(new { message = "Missing/invalid user identity." });
 
-        var returnedToBacklogCount = await _repo.DeleteSprintAndUnassignWorkItemsAsync(id, ct);
+        // Get affected user IDs before deletion for notification
+        var affectedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
 
-        if (returnedToBacklogCount < 0)
-            return NotFound(new { message = "Sprint not found." });
+        var returnedToBacklogCount = await _repo.DeleteSprintAndUnassignWorkItemsAsync(id, ct);
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
@@ -659,6 +710,28 @@ public sealed class SprintsController : ControllerBase
             ip,
             ct
         );
+
+        // Create notifications for affected users
+        var notifications = affectedUserIds.Select(assigneeUserId => new Notification
+        {
+            UserID = assigneeUserId,
+            RelatedSprintID = id,
+            NotificationType = "SprintDeleted",
+            Message = $"Sprint '{sprint.SprintName}' has been deleted. {returnedToBacklogCount} work item(s) returned to backlog.",
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        });
+
+        await _repo.AddNotificationsAsync(notifications, ct);
+
+        // Broadcast deletion to sprint group (for real-time UI cleanup)
+        await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintDeleted", new
+        {
+            sprintID = id,
+            sprintName = sprint.SprintName,
+            returnedToBacklogCount,
+            deletedAt = DateTime.UtcNow
+        }, ct);
 
         return Ok(new
         {

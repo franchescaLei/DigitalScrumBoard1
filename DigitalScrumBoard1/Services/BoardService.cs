@@ -1,5 +1,6 @@
 ﻿using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs;
+using DigitalScrumBoard1.DTOs.SignalR;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
@@ -257,13 +258,37 @@ public class BoardService : IBoardService
             ct
         );
 
+        // Build complete work item broadcast data
+        var assigneeName = item.AssignedUserID.HasValue
+            ? await _db.Users.AsNoTracking().Where(u => u.UserID == item.AssignedUserID.Value)
+                .Select(u => u.FirstName + " " + u.LastName).FirstOrDefaultAsync(ct)
+            : null;
+
+        var workItemType = await _db.WorkItemTypes.AsNoTracking()
+            .Where(t => t.WorkItemTypeID == item.WorkItemTypeID)
+            .Select(t => t.TypeName)
+            .FirstOrDefaultAsync(ct);
+
         await _hub.Clients
             .Group($"sprint-{item.SprintID.Value}")
-            .SendAsync("WorkItemMoved", new
+            .SendAsync("WorkItemMoved", new WorkItemBroadcastDto
             {
-                item.WorkItemID,
-                newStatus = normalizedStatus,
-                newBoardOrder = item.BoardOrder
+                WorkItemID = item.WorkItemID,
+                Title = item.Title,
+                Description = item.Description,
+                Status = normalizedStatus,
+                Priority = item.Priority,
+                DueDate = item.DueDate,
+                AssignedUserID = item.AssignedUserID,
+                AssignedUserName = assigneeName,
+                WorkItemTypeID = item.WorkItemTypeID,
+                WorkItemType = workItemType ?? string.Empty,
+                ParentWorkItemID = item.ParentWorkItemID,
+                TeamID = item.TeamID,
+                SprintID = item.SprintID,
+                BoardOrder = item.BoardOrder,
+                CreatedAt = item.CreatedAt,
+                UpdatedAt = item.UpdatedAt
             }, ct);
     }
 
@@ -364,6 +389,21 @@ public class BoardService : IBoardService
                 }, ct);
             }
 
+            // Add notification for assignee if different from actor
+            if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
+            {
+                await _repo.AddNotificationAsync(new Notification
+                {
+                    UserID = item.AssignedUserID.Value,
+                    Message = $"Work item '{item.Title}' was reordered on the board.",
+                    NotificationType = "WorkItemReordered",
+                    RelatedWorkItemID = item.WorkItemID,
+                    RelatedSprintID = item.SprintID,
+                    CreatedAt = now,
+                    IsRead = false
+                }, ct);
+            }
+
             await _repo.SaveAsync(ct);
             await tx.CommitAsync(ct);
         }
@@ -389,12 +429,43 @@ public class BoardService : IBoardService
             ct
         );
 
+        // Build complete work item broadcast data for reorder
+        var assigneeName = item.AssignedUserID.HasValue
+            ? await _db.Users.AsNoTracking().Where(u => u.UserID == item.AssignedUserID.Value)
+                .Select(u => u.FirstName + " " + u.LastName).FirstOrDefaultAsync(ct)
+            : null;
+
+        var workItemType = await _db.WorkItemTypes.AsNoTracking()
+            .Where(t => t.WorkItemTypeID == item.WorkItemTypeID)
+            .Select(t => t.TypeName)
+            .FirstOrDefaultAsync(ct);
+
+        // Broadcast full work item data so frontend can update without refetch
         await _hub.Clients
             .Group($"sprint-{item.SprintID.Value}")
             .SendAsync("WorkItemReordered", new
             {
-                item.WorkItemID,
-                newPosition
+                workItem = new WorkItemBroadcastDto
+                {
+                    WorkItemID = item.WorkItemID,
+                    Title = item.Title,
+                    Description = item.Description,
+                    Status = item.Status,
+                    Priority = item.Priority,
+                    DueDate = item.DueDate,
+                    AssignedUserID = item.AssignedUserID,
+                    AssignedUserName = assigneeName,
+                    WorkItemTypeID = item.WorkItemTypeID,
+                    WorkItemType = workItemType ?? string.Empty,
+                    ParentWorkItemID = item.ParentWorkItemID,
+                    TeamID = item.TeamID,
+                    SprintID = item.SprintID,
+                    BoardOrder = newPosition,
+                    CreatedAt = item.CreatedAt,
+                    UpdatedAt = item.UpdatedAt
+                },
+                newPosition,
+                sprintID = item.SprintID.Value
             }, ct);
     }
 

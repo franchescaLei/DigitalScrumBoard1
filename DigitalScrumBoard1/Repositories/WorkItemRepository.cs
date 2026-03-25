@@ -503,4 +503,326 @@ public sealed class WorkItemRepository : IWorkItemRepository
     {
         await _db.WorkItemComments.AddAsync(comment, ct);
     }
+
+    public async Task<List<EpicTileDto>> GetEpicTilesFilteredAsync(
+        string? search,
+        string? sortBy,
+        string? sortDirection,
+        CancellationToken ct)
+    {
+        var epicTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Epic")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var storyTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Story")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var taskTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Task")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var q = _db.WorkItems
+            .AsNoTracking()
+            .Where(w => !w.IsDeleted && w.WorkItemTypeID == epicTypeId);
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim().ToLowerInvariant();
+            q = q.Where(w => w.Title.ToLower().Contains(s));
+        }
+
+        var epics = await ApplyEpicSorting(q, sortBy, sortDirection, ct);
+
+        var epicIds = epics.Select(e => e.WorkItemID).ToList();
+
+        var stories = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == storyTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                epicIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
+            {
+                w.WorkItemID,
+                EpicID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
+            })
+            .ToListAsync(ct);
+
+        var storyIds = stories.Select(s => s.WorkItemID).ToList();
+        var storyToEpic = stories.ToDictionary(s => s.WorkItemID, s => s.EpicID);
+
+        var directEpicTasks = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == taskTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                epicIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
+            {
+                EpicID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
+            })
+            .ToListAsync(ct);
+
+        var storyTasks = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == taskTypeId &&
+                w.ParentWorkItemID.HasValue &&
+                storyIds.Contains(w.ParentWorkItemID.Value))
+            .Select(w => new
+            {
+                StoryID = w.ParentWorkItemID!.Value,
+                IsCompleted = w.Status == "Completed"
+            })
+            .ToListAsync(ct);
+
+        var storyCountsByEpic = stories
+            .GroupBy(x => x.EpicID)
+            .ToDictionary(
+                g => g.Key,
+                g => new
+                {
+                    Total = g.Count(),
+                    Completed = g.Count(x => x.IsCompleted)
+                });
+
+        var allTaskRows = new List<(int EpicID, bool IsCompleted)>();
+
+        allTaskRows.AddRange(directEpicTasks.Select(x => (x.EpicID, x.IsCompleted)));
+
+        foreach (var row in storyTasks)
+        {
+            if (storyToEpic.TryGetValue(row.StoryID, out var epicId))
+                allTaskRows.Add((epicId, row.IsCompleted));
+        }
+
+        var taskCountsByEpic = allTaskRows
+            .GroupBy(x => x.EpicID)
+            .ToDictionary(
+                g => g.Key,
+                g => new
+                {
+                    Total = g.Count(),
+                    Completed = g.Count(x => x.IsCompleted)
+                });
+
+        return epics.Select(e =>
+        {
+            storyCountsByEpic.TryGetValue(e.WorkItemID, out var storyCounts);
+            taskCountsByEpic.TryGetValue(e.WorkItemID, out var taskCounts);
+
+            return new EpicTileDto
+            {
+                EpicID = e.WorkItemID,
+                EpicTitle = e.Title ?? "",
+                TotalStories = storyCounts?.Total ?? 0,
+                CompletedStories = storyCounts?.Completed ?? 0,
+                TotalTasks = taskCounts?.Total ?? 0,
+                CompletedTasks = taskCounts?.Completed ?? 0
+            };
+        }).ToList();
+    }
+
+    private static async Task<List<(int WorkItemID, string Title)>> ApplyEpicSorting(
+        IQueryable<WorkItem> q,
+        string? sortBy,
+        string? sortDirection,
+        CancellationToken ct)
+    {
+        var descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+
+        IOrderedQueryable<WorkItem> orderedQuery;
+
+        if (string.IsNullOrWhiteSpace(sortBy) || sortBy.Trim() == "WorkItemID")
+        {
+            orderedQuery = descending
+                ? q.OrderByDescending(w => w.WorkItemID)
+                : q.OrderBy(w => w.WorkItemID);
+        }
+        else if (sortBy.Trim() == "Title")
+        {
+            orderedQuery = descending
+                ? q.OrderByDescending(w => w.Title)
+                : q.OrderBy(w => w.Title);
+        }
+        else
+        {
+            orderedQuery = q.OrderByDescending(w => w.WorkItemID);
+        }
+
+        var results = await orderedQuery
+            .Select(w => new { w.WorkItemID, w.Title })
+            .ToListAsync(ct);
+
+        return results.Select(r => (r.WorkItemID, r.Title ?? "")).ToList();
+    }
+
+    public async Task<AgendasResponseDto> GetAgendasFilteredAsync(
+        string? status,
+        string? priority,
+        string? workItemType,
+        int? teamId,
+        int? assigneeId,
+        string? sortBy,
+        string? sortDirection,
+        CancellationToken ct)
+    {
+        var storyTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Story")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var taskTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Task")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var allowedTypeIds = new[] { storyTypeId, taskTypeId };
+
+        var sprintRows = await _db.Sprints
+            .AsNoTracking()
+            .OrderByDescending(s => s.SprintID)
+            .Select(s => new AgendaSprintDto
+            {
+                SprintID = s.SprintID,
+                SprintName = s.SprintName,
+                Status = s.Status,
+                StartDate = s.StartDate,
+                EndDate = s.EndDate,
+                WorkItems = new List<AgendaWorkItemDto>()
+            })
+            .ToListAsync(ct);
+
+        var sprintIds = sprintRows.Select(s => s.SprintID).ToList();
+
+        var sprintWorkItemsQuery = (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking()
+                on w.WorkItemTypeID equals wt.WorkItemTypeID
+            where !w.IsDeleted
+                  && w.SprintID.HasValue
+                  && sprintIds.Contains(w.SprintID.Value)
+                  && allowedTypeIds.Contains(w.WorkItemTypeID)
+            select new AgendaWorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                TypeName = wt.TypeName,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                ParentWorkItemID = w.ParentWorkItemID,
+                SprintID = w.SprintID,
+                TeamID = w.TeamID,
+                AssignedUserID = w.AssignedUserID
+            }) as IQueryable<AgendaWorkItemDto>;
+
+        if (!string.IsNullOrWhiteSpace(status))
+            sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.Status == status);
+
+        if (!string.IsNullOrWhiteSpace(priority))
+            sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.Priority == priority);
+
+        if (!string.IsNullOrWhiteSpace(workItemType))
+            sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.TypeName == workItemType);
+
+        if (teamId.HasValue)
+            sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.TeamID == teamId.Value);
+
+        if (assigneeId.HasValue)
+            sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.AssignedUserID == assigneeId.Value);
+
+        sprintWorkItemsQuery = ApplyAgendaSorting(sprintWorkItemsQuery, sortBy, sortDirection);
+
+        var sprintWorkItems = await sprintWorkItemsQuery.ToListAsync(ct);
+
+        var sprintWorkItemsBySprint = sprintWorkItems
+            .GroupBy(w => w.SprintID!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var sprint in sprintRows)
+        {
+            if (sprintWorkItemsBySprint.TryGetValue(sprint.SprintID, out var items))
+                sprint.WorkItems = items;
+        }
+
+        var backlogWorkItemsQuery = (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking()
+                on w.WorkItemTypeID equals wt.WorkItemTypeID
+            where !w.IsDeleted
+                  && !w.SprintID.HasValue
+                  && allowedTypeIds.Contains(w.WorkItemTypeID)
+                  && w.Status != "Completed"
+            select new AgendaWorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                TypeName = wt.TypeName,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                ParentWorkItemID = w.ParentWorkItemID,
+                SprintID = w.SprintID,
+                TeamID = w.TeamID,
+                AssignedUserID = w.AssignedUserID
+            }) as IQueryable<AgendaWorkItemDto>;
+
+        if (!string.IsNullOrWhiteSpace(status))
+            backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.Status == status);
+
+        if (!string.IsNullOrWhiteSpace(priority))
+            backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.Priority == priority);
+
+        if (!string.IsNullOrWhiteSpace(workItemType))
+            backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.TypeName == workItemType);
+
+        if (teamId.HasValue)
+            backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.TeamID == teamId.Value);
+
+        if (assigneeId.HasValue)
+            backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.AssignedUserID == assigneeId.Value);
+
+        backlogWorkItemsQuery = ApplyAgendaSorting(backlogWorkItemsQuery, sortBy, sortDirection);
+
+        var backlogWorkItems = await backlogWorkItemsQuery.ToListAsync(ct);
+
+        return new AgendasResponseDto
+        {
+            Sprints = sprintRows,
+            WorkItems = backlogWorkItems
+        };
+    }
+
+    private static IQueryable<AgendaWorkItemDto> ApplyAgendaSorting(
+        IQueryable<AgendaWorkItemDto> q,
+        string? sortBy,
+        string? sortDirection)
+    {
+        var descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+
+        return sortBy?.Trim() switch
+        {
+            "Title" => descending
+                ? q.OrderByDescending(w => w.Title)
+                : q.OrderBy(w => w.Title),
+            "Priority" => descending
+                ? q.OrderByDescending(w => w.Priority)
+                : q.OrderBy(w => w.Priority),
+            "Status" => descending
+                ? q.OrderByDescending(w => w.Status)
+                : q.OrderBy(w => w.Status),
+            "WorkItemID" => descending
+                ? q.OrderByDescending(w => w.WorkItemID)
+                : q.OrderBy(w => w.WorkItemID),
+            _ => q.OrderByDescending(w => w.WorkItemID)
+        };
+    }
 }

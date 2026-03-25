@@ -31,4 +31,17 @@ public interface ISprintRepository
         Sprint sprint,
         IEnumerable<Notification> notifications,
         CancellationToken ct);
+
+    Task<(List<object> Items, int Total)> GetPagedAsync(
+        string? status,
+        int? teamId,
+        int? managedBy,
+        DateOnly? from,
+        DateOnly? to,
+        string? search,
+        string? sortBy,
+        string? sortDirection,
+        int page,
+        int pageSize,
+        CancellationToken ct);
 }
