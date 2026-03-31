@@ -724,8 +724,8 @@ public sealed class SprintsController : ControllerBase
 
         await _repo.AddNotificationsAsync(notifications, ct);
 
-        // Broadcast deletion to sprint group (for real-time UI cleanup)
-        await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintDeleted", new
+        // Broadcast deletion to ALL clients (for real-time backlog/sprint list updates)
+        await _hub.Clients.All.SendAsync("SprintDeleted", new
         {
             sprintID = id,
             sprintName = sprint.SprintName,

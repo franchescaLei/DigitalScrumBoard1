@@ -92,7 +92,14 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("DSB", policy =>
-        policy.WithOrigins("https://localhost:7120")
+        policy.WithOrigins(
+                "https://localhost:7120",
+                "https://localhost:5001",
+                "https://localhost:5000",
+                "http://localhost:5001",
+                "http://localhost:5000",
+                "http://localhost:5206"
+            )
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials()

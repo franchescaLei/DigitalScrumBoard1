@@ -666,6 +666,83 @@ public sealed class WorkItemRepository : IWorkItemRepository
         return results.Select(r => (r.WorkItemID, r.Title ?? "")).ToList();
     }
 
+    public async Task<List<WorkItemDto>> GetWorkItemsByParentIdAsync(int parentId, string typeName, CancellationToken ct)
+    {
+        var typeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == typeName)
+            .Select(t => t.WorkItemTypeID)
+            .FirstOrDefaultAsync(ct);
+
+        if (typeId == 0 || typeId == default)
+            return new List<WorkItemDto>();
+
+        var items = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w =>
+                !w.IsDeleted &&
+                w.WorkItemTypeID == typeId &&
+                w.ParentWorkItemID == parentId)
+            .OrderBy(w => w.WorkItemID)
+            .Select(w => new WorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                Description = w.Description,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                DueDate = w.DueDate,
+                AssignedUserID = w.AssignedUserID,
+                ParentWorkItemID = w.ParentWorkItemID,
+                TeamID = w.TeamID,
+                SprintID = w.SprintID,
+                CreatedAt = w.CreatedAt,
+                UpdatedAt = w.UpdatedAt
+            })
+            .ToListAsync(ct);
+
+        return items;
+    }
+
+    public async Task<List<AgendaWorkItemDto>> GetBacklogItemsAsync(CancellationToken ct)
+    {
+        var storyTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Story")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var taskTypeId = await _db.WorkItemTypes
+            .Where(t => t.TypeName == "Task")
+            .Select(t => t.WorkItemTypeID)
+            .FirstAsync(ct);
+
+        var allowedTypeIds = new[] { storyTypeId, taskTypeId };
+
+        var backlogItems = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking()
+                on w.WorkItemTypeID equals wt.WorkItemTypeID
+            where !w.IsDeleted
+                  && !w.SprintID.HasValue
+                  && allowedTypeIds.Contains(w.WorkItemTypeID)
+                  && w.Status != "Completed"
+            orderby w.WorkItemTypeID descending, w.ParentWorkItemID, w.WorkItemID
+            select new AgendaWorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title ?? "",
+                TypeName = wt.TypeName,
+                Status = w.Status ?? "",
+                Priority = w.Priority,
+                ParentWorkItemID = w.ParentWorkItemID,
+                SprintID = w.SprintID,
+                TeamID = w.TeamID,
+                AssignedUserID = w.AssignedUserID
+            })
+            .ToListAsync(ct);
+
+        return backlogItems;
+    }
+
     public async Task<AgendasResponseDto> GetAgendasFilteredAsync(
         string? status,
         string? priority,
@@ -824,5 +901,17 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 : q.OrderBy(w => w.WorkItemID),
             _ => q.OrderByDescending(w => w.WorkItemID)
         };
+    }
+
+    public async Task<List<WorkItem>> GetWorkItemsBySprintIdAsync(int sprintId, CancellationToken ct)
+    {
+        // Simple query: all work items for sprint, excluding deleted
+        return await _db.WorkItems
+            .AsNoTracking()
+            .Include(w => w.WorkItemType)
+            .Include(w => w.AssignedUser)
+            .Where(w => w.SprintID == sprintId && !w.IsDeleted)
+            .OrderBy(w => w.CreatedAt)
+            .ToListAsync(ct);
     }
 }

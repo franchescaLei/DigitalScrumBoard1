@@ -56,6 +56,10 @@ public interface IWorkItemRepository
         string? sortDirection,
         CancellationToken ct);
 
+    Task<List<WorkItemDto>> GetWorkItemsByParentIdAsync(int parentId, string typeName, CancellationToken ct);
+
+    Task<List<AgendaWorkItemDto>> GetBacklogItemsAsync(CancellationToken ct);
+
     Task<AgendasResponseDto> GetAgendasFilteredAsync(
         string? status,
         string? priority,
@@ -65,4 +69,6 @@ public interface IWorkItemRepository
         string? sortBy,
         string? sortDirection,
         CancellationToken ct);
+    
+    Task<List<WorkItem>> GetWorkItemsBySprintIdAsync(int sprintId, CancellationToken ct);
 }

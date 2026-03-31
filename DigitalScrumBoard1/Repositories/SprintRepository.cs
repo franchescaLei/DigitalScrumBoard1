@@ -266,23 +266,52 @@ public sealed class SprintRepository : ISprintRepository
 
         var total = await q.CountAsync(ct);
 
-        var items = await q
+        var sprints = await q
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(s => new
+            .ToListAsync(ct);
+
+        var sprintIds = sprints.Select(s => s.SprintID).ToList();
+        
+        var storyTypeId = await _db.WorkItemTypes
+            .Where(wt => wt.TypeName == "Story")
+            .Select(wt => wt.WorkItemTypeID)
+            .FirstOrDefaultAsync(ct);
+        
+        var taskTypeId = await _db.WorkItemTypes
+            .Where(wt => wt.TypeName == "Task")
+            .Select(wt => wt.WorkItemTypeID)
+            .FirstOrDefaultAsync(ct);
+
+        var counts = await _db.WorkItems
+            .AsNoTracking()
+            .Where(w => w.SprintID.HasValue && sprintIds.Contains(w.SprintID.Value) && !w.IsDeleted)
+            .GroupBy(w => w.SprintID)
+            .Select(g => new
             {
-                s.SprintID,
-                s.SprintName,
-                s.Goal,
-                s.StartDate,
-                s.EndDate,
-                s.Status,
-                s.ManagedBy,
-                s.TeamID,
-                s.CreatedAt,
-                s.UpdatedAt
+                SprintID = g.Key!.Value,
+                StoryCount = g.Count(w => w.WorkItemTypeID == storyTypeId),
+                TaskCount = g.Count(w => w.WorkItemTypeID == taskTypeId)
             })
             .ToListAsync(ct);
+
+        var countsLookup = counts.ToDictionary(c => c.SprintID, c => new { c.StoryCount, c.TaskCount });
+
+        var items = sprints.Select(s => new
+        {
+            s.SprintID,
+            s.SprintName,
+            s.Goal,
+            s.StartDate,
+            s.EndDate,
+            s.Status,
+            s.ManagedBy,
+            s.TeamID,
+            s.CreatedAt,
+            s.UpdatedAt,
+            StoryCount = countsLookup.TryGetValue(s.SprintID, out var cnt) ? cnt.StoryCount : 0,
+            TaskCount = countsLookup.TryGetValue(s.SprintID, out var cnt2) ? cnt2.TaskCount : 0
+        }).ToList();
 
         return (items.Cast<object>().ToList(), total);
     }

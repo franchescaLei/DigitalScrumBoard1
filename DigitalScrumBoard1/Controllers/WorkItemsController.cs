@@ -400,6 +400,41 @@ public sealed class WorkItemsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("stories/by-epic")]
+    [Authorize]
+    public async Task<ActionResult<List<WorkItemDto>>> GetStoriesByEpicId(
+        [FromQuery] int epicId,
+        CancellationToken ct = default)
+    {
+        if (epicId <= 0)
+            return BadRequest(new { message = "EpicID is required." });
+
+        var result = await _repo.GetWorkItemsByParentIdAsync(epicId, "Story", ct);
+        return Ok(result);
+    }
+
+    [HttpGet("tasks/by-parent")]
+    [Authorize]
+    public async Task<ActionResult<List<WorkItemDto>>> GetTasksByParentId(
+        [FromQuery] int parentId,
+        CancellationToken ct = default)
+    {
+        if (parentId <= 0)
+            return BadRequest(new { message = "ParentID is required." });
+
+        var result = await _repo.GetWorkItemsByParentIdAsync(parentId, "Task", ct);
+        return Ok(result);
+    }
+
+    [HttpGet("backlog")]
+    [Authorize]
+    public async Task<ActionResult<List<AgendaWorkItemDto>>> GetBacklogItems(
+        CancellationToken ct = default)
+    {
+        var result = await _repo.GetBacklogItemsAsync(ct);
+        return Ok(result);
+    }
+
     [HttpGet("agendas")]
     [Authorize]
     public async Task<ActionResult<AgendasResponseDto>> GetAgendas(
@@ -422,6 +457,44 @@ public sealed class WorkItemsController : ControllerBase
             sortDirection,
             ct);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Gets all work items assigned to a specific sprint (excluding Completed items).
+    /// For sprint planning in Backlogs page.
+    /// </summary>
+    [HttpGet("sprint/{sprintId:int}")]
+    [Authorize]
+    public async Task<ActionResult<List<WorkItemDto>>> GetSprintWorkItems(
+        [FromRoute] int sprintId,
+        CancellationToken ct)
+    {
+        if (sprintId <= 0)
+            return BadRequest(new { message = "SprintID must be greater than 0." });
+
+        var workItems = await _repo.GetWorkItemsBySprintIdAsync(sprintId, ct);
+        
+        // Exclude Completed items for planning view
+        var filtered = workItems
+            .Where(w => !string.Equals(w.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+            .Select(w => new WorkItemDto
+            {
+                WorkItemID = w.WorkItemID,
+                Title = w.Title,
+                Description = w.Description,
+                Status = w.Status,
+                Priority = w.Priority,
+                DueDate = w.DueDate,
+                AssignedUserID = w.AssignedUserID,
+                ParentWorkItemID = w.ParentWorkItemID,
+                TeamID = w.TeamID,
+                SprintID = w.SprintID,
+                CreatedAt = w.CreatedAt,
+                UpdatedAt = w.UpdatedAt
+            })
+            .ToList();
+
+        return Ok(filtered);
     }
 
     [HttpPut("{id:int}/assign-sprint")]
@@ -495,8 +568,8 @@ public sealed class WorkItemsController : ControllerBase
             await _repo.SaveChangesAsync(ct);
         }
 
-        // Broadcast sprint assignment to sprint group for real-time board update
-        await _hub.Clients.Group($"sprint-{req.SprintID}").SendAsync("WorkItemAssignedToSprint", new
+        // Broadcast sprint assignment to ALL clients for real-time backlog/sprint list updates
+        await _hub.Clients.All.SendAsync("WorkItemAssignedToSprint", new
         {
             workItemID = workItem.WorkItemID,
             title = workItem.Title,
@@ -590,10 +663,10 @@ public sealed class WorkItemsController : ControllerBase
             await _repo.SaveChangesAsync(ct);
         }
 
-        // Broadcast sprint removal to old sprint group for real-time board update
+        // Broadcast sprint removal to ALL clients for real-time backlog/sprint list updates
         if (oldSprintId.HasValue)
         {
-            await _hub.Clients.Group($"sprint-{oldSprintId.Value}").SendAsync("WorkItemRemovedFromSprint", new
+            await _hub.Clients.All.SendAsync("WorkItemRemovedFromSprint", new
             {
                 workItemID = workItem.WorkItemID,
                 title = workItem.Title,
