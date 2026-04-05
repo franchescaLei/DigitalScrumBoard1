@@ -1621,6 +1621,7 @@ export function AdminDirectoryPanel() {
 
     const lockedCount = users.filter((u) => u.isLocked).length;
     const inactiveCount = users.filter((u) => !u.isActive).length;
+    const namedTeamCount = teams.filter((t) => !isDefaultTeamName(t.name)).length;
 
     return (
         <div className="admin-page">
@@ -1648,7 +1649,7 @@ export function AdminDirectoryPanel() {
                         </div>
                         <div className="admin-stat-divider" />
                         <div className="admin-stat">
-                            <span className="admin-stat-val">{teams.length}</span>
+                            <span className="admin-stat-val">{namedTeamCount}</span>
                             <span className="admin-stat-label">Teams</span>
                         </div>
                         {lockedCount > 0 && (
