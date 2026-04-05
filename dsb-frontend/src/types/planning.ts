@@ -82,8 +82,14 @@ export type SprintSummary = {
     endDate: string | null;
     status: string;
     managedBy: number | null;
+    /** Display name from server when manager user is loaded; otherwise omit. */
+    managedByName?: string | null;
     teamID: number | null;
     createdAt?: string | null;
     updatedAt?: string | null;
+    /** Work items of type Story in this sprint (from list API). */
+    storyCount: number;
+    /** Work items of type Task in this sprint (from list API). */
+    taskCount: number;
 };
 

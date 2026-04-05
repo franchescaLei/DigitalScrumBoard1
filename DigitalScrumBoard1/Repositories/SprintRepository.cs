@@ -234,7 +234,7 @@ public sealed class SprintRepository : ISprintRepository
         if (pageSize < 1) pageSize = 1;
         if (pageSize > 200) pageSize = 200;
 
-        var q = _db.Sprints.AsNoTracking().AsQueryable();
+        var q = _db.Sprints.AsNoTracking().Include(s => s.Manager).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -306,6 +306,7 @@ public sealed class SprintRepository : ISprintRepository
             s.EndDate,
             s.Status,
             s.ManagedBy,
+            ManagedByName = FormatManagerDisplayName(s.Manager),
             s.TeamID,
             s.CreatedAt,
             s.UpdatedAt,
@@ -314,6 +315,17 @@ public sealed class SprintRepository : ISprintRepository
         }).ToList();
 
         return (items.Cast<object>().ToList(), total);
+    }
+
+    private static string? FormatManagerDisplayName(User? u)
+    {
+        if (u is null) return null;
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(u.FirstName)) parts.Add(u.FirstName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.MiddleName)) parts.Add(u.MiddleName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.LastName)) parts.Add(u.LastName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.NameExtension)) parts.Add(u.NameExtension.Trim());
+        return parts.Count > 0 ? string.Join(' ', parts) : null;
     }
 
     private static IQueryable<Sprint> ApplySprintSorting(

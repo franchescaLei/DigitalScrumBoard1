@@ -8,6 +8,69 @@ type PagedSprintsResponse = {
     items: SprintSummary[];
 };
 
+function num(raw: Record<string, unknown>, ...keys: string[]): number {
+    for (const k of keys) {
+        const v = raw[k];
+        if (v === undefined || v === null) continue;
+        const n = Number(v);
+        if (Number.isFinite(n)) return n;
+    }
+    return 0;
+}
+
+function nullableId(raw: Record<string, unknown>, ...keys: string[]): number | null {
+    for (const k of keys) {
+        if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+        const v = raw[k];
+        if (v === undefined || v === null) return null;
+        const n = Number(v);
+        if (Number.isFinite(n)) return n;
+    }
+    return null;
+}
+
+/** Normalizes sprint list/detail payloads (camelCase or PascalCase). */
+export function normalizeSprintSummary(raw: Record<string, unknown>): SprintSummary {
+    const mn = raw.managedByName ?? raw.ManagedByName;
+    const managedByName =
+        typeof mn === 'string' && mn.trim() !== '' ? mn.trim() : null;
+    return {
+        sprintID: num(raw, 'sprintID', 'SprintID') || 0,
+        sprintName: String(raw.sprintName ?? raw.SprintName ?? ''),
+        goal: raw.goal !== undefined ? (raw.goal as string | null) : (raw.Goal as string | null | undefined) ?? null,
+        startDate:
+            raw.startDate != null
+                ? String(raw.startDate)
+                : raw.StartDate != null
+                  ? String(raw.StartDate)
+                  : null,
+        endDate:
+            raw.endDate != null
+                ? String(raw.endDate)
+                : raw.EndDate != null
+                  ? String(raw.EndDate)
+                  : null,
+        status: String(raw.status ?? raw.Status ?? ''),
+        managedBy: nullableId(raw, 'managedBy', 'ManagedBy'),
+        managedByName,
+        teamID: nullableId(raw, 'teamID', 'TeamID'),
+        createdAt:
+            raw.createdAt != null
+                ? String(raw.createdAt)
+                : raw.CreatedAt != null
+                  ? String(raw.CreatedAt)
+                  : null,
+        updatedAt:
+            raw.updatedAt != null
+                ? String(raw.updatedAt)
+                : raw.UpdatedAt != null
+                  ? String(raw.UpdatedAt)
+                  : null,
+        storyCount: num(raw, 'storyCount', 'StoryCount'),
+        taskCount: num(raw, 'taskCount', 'TaskCount'),
+    };
+}
+
 export const listSprints = async (params?: {
     status?: string;
     teamId?: number;
@@ -34,11 +97,24 @@ export const listSprints = async (params?: {
         if (params.pageSize) qs.set('pageSize', String(params.pageSize));
     }
     const qsStr = qs.toString();
-    return apiClient.get<PagedSprintsResponse>(`/api/sprints${qsStr ? `?${qsStr}` : ''}`);
+    const res = await apiClient.get<{
+        page: number;
+        pageSize: number;
+        total: number;
+        items: Record<string, unknown>[];
+    }>(`/api/sprints${qsStr ? `?${qsStr}` : ''}`);
+    return {
+        page: res.page,
+        pageSize: res.pageSize,
+        total: res.total,
+        items: Array.isArray(res.items) ? res.items.map((row) => normalizeSprintSummary(row)) : [],
+    };
 };
 
-export const getSprintById = async (sprintId: number): Promise<SprintSummary> =>
-    apiClient.get<SprintSummary>(`/api/sprints/${sprintId}`);
+export const getSprintById = async (sprintId: number): Promise<SprintSummary> => {
+    const raw = await apiClient.get<Record<string, unknown>>(`/api/sprints/${sprintId}`);
+    return normalizeSprintSummary(raw);
+};
 
 export const createSprint = async (payload: {
     sprintName: string;
