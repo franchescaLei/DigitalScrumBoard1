@@ -15,6 +15,7 @@ import VerifyEmailPage from "./pages/VerifyEmailPage";
 import BacklogsPage from "./pages/BacklogsPage";
 import BoardsPage from "./pages/BoardsPage";
 import AdminPage from "./pages/AdminPage";
+import ProfilePage from "./pages/ProfilePage";
 import NotFoundPage from "./pages/NotFoundPage";
 
 import "./styles/theme.css";
@@ -42,6 +43,7 @@ export default function App() {
                             <Route index element={<Navigate to="/backlogs" replace />} />
                             <Route path="backlogs" element={<BacklogsPage />} />
                             <Route path="boards" element={<BoardsPage />} />
+                            <Route path="profile" element={<ProfilePage />} />
                             {/* Admin sub-routes */}
                             <Route path="admin" element={<AdminPage />} />
                             <Route path="admin/users" element={<AdminPage />} />

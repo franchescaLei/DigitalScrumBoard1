@@ -4,6 +4,7 @@ import type {
     LoginRequest,
     LoginResponse,
     UserProfile,
+    UpdateProfileRequest,
     ForgotPasswordRequest,
     VerifyResetCodeRequest,
     ResetPasswordRequest,
@@ -44,6 +45,12 @@ export const login = async (data: LoginRequest): Promise<LoginResponse> => {
 /** POST /api/auth/change-password */
 export const changePassword = (data: ChangePasswordRequest): Promise<MessageResponse> =>
     apiClient.post<MessageResponse>('/api/auth/change-password', data);
+
+/** PATCH /api/auth/profile — update the signed-in user's name fields */
+export const updateProfile = async (data: UpdateProfileRequest): Promise<UserProfile> => {
+    const raw = await apiClient.patch<Record<string, unknown>>('/api/auth/profile', data);
+    return normalizeUserProfile(raw);
+};
 
 // ── Email verification ────────────────────────
 

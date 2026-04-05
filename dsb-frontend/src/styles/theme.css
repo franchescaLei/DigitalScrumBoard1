@@ -50,6 +50,11 @@
     --color-lock-border: #FED7AA;
     /* Divider */
     --divider: #EDE7E0;
+    /* Scrollbars (Firefox + WebKit) */
+    --scrollbar-size: 6px;
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: color-mix(in srgb, var(--form-text-muted) 32%, var(--divider));
+    --scrollbar-thumb-hover: color-mix(in srgb, var(--accent-red) 38%, var(--form-text-muted));
     /* Shadows */
     --shadow-card: 0 1px 3px rgba(26, 20, 16, 0.06), 0 8px 32px rgba(26, 20, 16, 0.07);
     --shadow-input-focus: 0 0 0 3px rgba(139, 26, 26, 0.14);
@@ -103,6 +108,8 @@
     --color-lock-bg: #180C04;
     --color-lock-border: #5C2D0A;
     --divider: #221E1A;
+    --scrollbar-thumb: color-mix(in srgb, var(--form-text-muted) 42%, var(--divider));
+    --scrollbar-thumb-hover: color-mix(in srgb, var(--accent-gold) 35%, var(--form-text-muted));
     --shadow-card: 0 1px 3px rgba(0,0,0,0.4), 0 8px 32px rgba(0,0,0,0.5);
     --shadow-input-focus: 0 0 0 3px rgba(197, 48, 48, 0.2);
     --shadow-btn: 0 1px 2px rgba(0,0,0,0.4), 0 3px 12px rgba(197,48,48,0.25);
@@ -130,6 +137,39 @@ body {
     background: var(--form-bg);
     color: var(--form-text);
     transition: background 0.25s var(--ease-out), color 0.25s var(--ease-out);
+}
+
+/* ─────────────────────────────────────────────
+   Minimal scrollbars (theme-aware)
+───────────────────────────────────────────── */
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+    width: var(--scrollbar-size);
+    height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 /* Focus visible polyfill reset */

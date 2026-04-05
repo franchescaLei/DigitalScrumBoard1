@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as signalR from "@microsoft/signalr";
-import { logout } from "../api/authApi";
 import {
     getMyNotifications,
     getUnreadNotificationCount,
@@ -56,13 +55,6 @@ const BellIcon = () => (
             strokeWidth="1.3"
             strokeLinecap="round"
         />
-    </svg>
-);
-
-const LogoutIcon = () => (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        <path d="M10.5 5L14 8l-3.5 3M14 8H6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
 );
 
@@ -295,18 +287,6 @@ export default function Header() {
         }
     };
 
-    async function handleLogout() {
-        try {
-            await logout();
-        } finally {
-            window.location.href = "/login";
-        }
-    }
-
-    const initials = user?.fullName
-        ? user.fullName.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
-        : "?";
-
     const notifPanel =
         panelOpen &&
         createPortal(
@@ -447,31 +427,6 @@ export default function Header() {
                     title={isDark ? "Light mode" : "Dark mode"}
                 >
                     {isDark ? <SunIcon /> : <MoonIcon />}
-                </button>
-
-                <div className="app-header-divider" aria-hidden="true" />
-
-                {user ? (
-                    <div className="app-header-user">
-                        <div className="app-header-avatar" aria-hidden="true">
-                            {initials}
-                        </div>
-                        <div className="app-header-user-info">
-                            <span className="app-header-user-name">{user.fullName}</span>
-                            <span className="app-header-user-role">{user.roleName}</span>
-                        </div>
-                    </div>
-                ) : null}
-
-                <button
-                    type="button"
-                    className="app-header-logout-btn"
-                    onClick={handleLogout}
-                    title="Sign out"
-                    aria-label="Sign out"
-                >
-                    <LogoutIcon />
-                    <span>Sign out</span>
                 </button>
             </div>
         </header>

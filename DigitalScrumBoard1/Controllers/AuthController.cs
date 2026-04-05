@@ -1,5 +1,6 @@
 ﻿using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs.Authentication;
+using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using DigitalScrumBoard1.Services;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
@@ -19,6 +21,7 @@ namespace DigitalScrumBoard1.Controllers
         private readonly DigitalScrumBoardContext _db;
         private readonly IAuditService _audit;
         private readonly IAuthEmailService _authEmail;
+        private readonly IHubContext<NotificationHub> _notifyHub;
 
         private const int RateLimitStartsAtFailedAttempt = 5;
         private const int AccountLockoutFailedAttempt = 8;
@@ -29,11 +32,16 @@ namespace DigitalScrumBoard1.Controllers
 
         private static readonly TimeSpan PasswordResetCodeLifetime = TimeSpan.FromMinutes(5);
 
-        public AuthController(DigitalScrumBoardContext db, IAuditService audit, IAuthEmailService authEmail)
+        public AuthController(
+            DigitalScrumBoardContext db,
+            IAuditService audit,
+            IAuthEmailService authEmail,
+            IHubContext<NotificationHub> notifyHub)
         {
             _db = db;
             _audit = audit;
             _authEmail = authEmail;
+            _notifyHub = notifyHub;
         }
 
         [HttpPost("login")]
@@ -49,6 +57,7 @@ namespace DigitalScrumBoard1.Controllers
 
             var user = await _db.Users
                 .Include(u => u.Role)
+                .Include(u => u.Team)
                 .AsTracking()
                 .SingleOrDefaultAsync(u => u.EmailAddress.ToLower() == email, ct);
 
@@ -131,7 +140,7 @@ namespace DigitalScrumBoard1.Controllers
             {
                 new(ClaimTypes.NameIdentifier, user.UserID.ToString()),
                 new(ClaimTypes.Email, user.EmailAddress),
-                new(ClaimTypes.Name, $"{user.FirstName} {user.LastName}"),
+                new(ClaimTypes.Name, BuildDisplayName(user.FirstName, user.MiddleName, user.LastName, user.NameExtension)),
                 new(ClaimTypes.Role, user.Role?.RoleName ?? user.RoleID.ToString())
             };
 
@@ -157,15 +166,7 @@ namespace DigitalScrumBoard1.Controllers
                 message = "Login successful.",
                 mustChangePassword = user.MustChangePassword,
                 emailVerified = user.EmailVerified,
-                user = new AuthUserDto
-                {
-                    UserID = user.UserID,
-                    EmailAddress = user.EmailAddress,
-                    FullName = $"{user.FirstName} {user.LastName}",
-                    RoleID = user.RoleID,
-                    RoleName = user.Role?.RoleName ?? string.Empty,
-                    TeamID = user.TeamID
-                }
+                user = ToAuthUserDto(user)
             });
         }
 
@@ -194,21 +195,81 @@ namespace DigitalScrumBoard1.Controllers
 
             var user = await _db.Users
                 .Include(u => u.Role)
+                .Include(u => u.Team)
                 .AsNoTracking()
                 .SingleOrDefaultAsync(u => u.UserID == userId.Value, ct);
 
             if (user is null)
                 return Unauthorized(new { message = "Not authenticated." });
 
-            return Ok(new AuthUserDto
+            return Ok(ToAuthUserDto(user));
+        }
+
+        [HttpPatch("profile")]
+        [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+        public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequestDto req, CancellationToken ct)
+        {
+            if (!ModelState.IsValid)
+                return ValidationProblem(ModelState);
+
+            var userId = GetUserId();
+            if (userId is null)
+                return Unauthorized(new { message = "Not authenticated." });
+
+            var user = await _db.Users
+                .Include(u => u.Role)
+                .Include(u => u.Team)
+                .AsTracking()
+                .SingleOrDefaultAsync(u => u.UserID == userId.Value, ct);
+
+            if (user is null)
+                return Unauthorized(new { message = "Not authenticated." });
+
+            if (user.Disabled)
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = "Account is disabled." });
+
+            var firstName = req.FirstName.Trim();
+            var lastName = req.LastName.Trim();
+            var middleName = string.IsNullOrWhiteSpace(req.MiddleName) ? null : req.MiddleName.Trim();
+            var nameExtension = string.IsNullOrWhiteSpace(req.NameExtension) ? null : req.NameExtension.Trim();
+
+            if (firstName.Length == 0 || lastName.Length == 0)
+                return BadRequest(new { message = "First name and last name are required." });
+
+            user.FirstName = firstName;
+            user.MiddleName = middleName;
+            user.LastName = lastName;
+            user.NameExtension = nameExtension;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(user.UserID, "UPDATE_PROFILE", "User", user.UserID, true, "Profile name updated.", ip, ct);
+
+            var displayName = BuildDisplayName(user.FirstName, user.MiddleName, user.LastName, user.NameExtension);
+            var claims = new List<Claim>
             {
-                UserID = user.UserID,
-                EmailAddress = user.EmailAddress,
-                FullName = $"{user.FirstName} {user.LastName}",
-                RoleID = user.RoleID,
-                RoleName = user.Role?.RoleName ?? string.Empty,
-                TeamID = user.TeamID
+                new(ClaimTypes.NameIdentifier, user.UserID.ToString()),
+                new(ClaimTypes.Email, user.EmailAddress),
+                new(ClaimTypes.Name, displayName),
+                new(ClaimTypes.Role, user.Role?.RoleName ?? user.RoleID.ToString())
+            };
+            var identity = new ClaimsIdentity(claims, "MyCookieAuth");
+            var principal = new ClaimsPrincipal(identity);
+            await HttpContext.SignInAsync("MyCookieAuth", principal, new AuthenticationProperties
+            {
+                IsPersistent = true,
+                AllowRefresh = true,
+                IssuedUtc = DateTimeOffset.UtcNow,
+                ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8)
             });
+
+            var dto = ToAuthUserDto(user);
+            await _notifyHub.Clients.Group($"user-{user.UserID}").SendAsync("UserProfileChanged", dto, ct);
+            await _notifyHub.Clients.All.SendAsync("AdminDirectoryChanged", new { reason = "users" }, ct);
+
+            return Ok(dto);
         }
 
         [HttpPost("change-password")]
@@ -499,6 +560,37 @@ namespace DigitalScrumBoard1.Controllers
         {
             var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return int.TryParse(id, out var parsed) ? parsed : null;
+        }
+
+        private static string BuildDisplayName(string firstName, string? middleName, string lastName, string? nameExtension)
+        {
+            var parts = new List<string>();
+            var f = firstName.Trim();
+            var l = lastName.Trim();
+            if (f.Length > 0) parts.Add(f);
+            if (!string.IsNullOrWhiteSpace(middleName)) parts.Add(middleName!.Trim());
+            if (l.Length > 0) parts.Add(l);
+            if (!string.IsNullOrWhiteSpace(nameExtension)) parts.Add(nameExtension!.Trim());
+            return parts.Count > 0 ? string.Join(' ', parts) : string.Empty;
+        }
+
+        private static AuthUserDto ToAuthUserDto(User user)
+        {
+            var teamName = user.Team?.TeamName;
+            return new AuthUserDto
+            {
+                UserID = user.UserID,
+                EmailAddress = user.EmailAddress,
+                FirstName = user.FirstName,
+                MiddleName = user.MiddleName,
+                LastName = user.LastName,
+                NameExtension = user.NameExtension,
+                FullName = BuildDisplayName(user.FirstName, user.MiddleName, user.LastName, user.NameExtension),
+                RoleID = user.RoleID,
+                RoleName = user.Role?.RoleName ?? string.Empty,
+                TeamID = user.TeamID,
+                TeamName = string.IsNullOrWhiteSpace(teamName) ? null : teamName
+            };
         }
 
         private static TimeSpan GetCooldownDuration(int consecutiveFailedAttempts)

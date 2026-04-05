@@ -17,10 +17,24 @@ export interface LoginResponse {
 export interface UserProfile {
     userID: number;
     emailAddress: string;
+    /** Display name from the API (assembled from name parts on the server). */
     fullName: string;
+    firstName: string;
+    middleName?: string | null;
+    lastName: string;
+    nameExtension?: string | null;
     roleID: number;
     roleName: string;
     teamID: number | null;
+    /** Present when the auth/me payload includes it; otherwise derive display from teamID only. */
+    teamName?: string | null;
+}
+
+export interface UpdateProfileRequest {
+    firstName: string;
+    middleName?: string | null;
+    lastName: string;
+    nameExtension?: string | null;
 }
 
 export interface ForgotPasswordRequest {
