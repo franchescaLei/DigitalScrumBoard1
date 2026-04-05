@@ -1,369 +1,478 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { getCurrentUser } from '../api/authApi';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import * as signalR from "@microsoft/signalr";
+import { logout } from "../api/authApi";
 import {
     getMyNotifications,
     getUnreadNotificationCount,
     markAllNotificationsRead,
     markNotificationRead,
-} from '../api/notificationsApi';
-import type { NotificationListItem, NotificationListResponse } from '../types/notification';
-import type { UserProfile } from '../types/auth';
-import { getNotificationHubConnection } from '../services/notificationHub';
-import AddItemModal from './AddItemModal';
-import '../styles/app-shell.css';
+    NOTIFICATIONS_CHANGED_EVENT,
+} from "../api/notificationsApi";
+import { useAuth } from "../context/AuthContext";
+import { useTheme } from "../context/ThemeContext";
+import { ApiError } from "../services/apiClient";
+import { getNotificationHubConnection } from "../services/notificationHub";
+import type { NotificationListItem } from "../types/notification";
+import { parseNotificationBroadcast, playNotificationChime } from "../utils/notificationSound";
 
-type AddItemMode = 'epic' | 'story' | 'sprint';
+const SunIcon = () => (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.5" />
+        <line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="3.05" y1="3.05" x2="4.11" y2="4.11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="11.89" y1="11.89" x2="12.95" y2="12.95" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="12.95" y1="3.05" x2="11.89" y2="4.11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="4.11" y1="11.89" x2="3.05" y2="12.95" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+);
+
+const MoonIcon = () => (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+            d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6.002 6.002 0 1 0 7 7Z"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        />
+    </svg>
+);
 
 const BellIcon = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path
-            d="M12 22a2.5 2.5 0 0 0 2.5-2.5H9.5A2.5 2.5 0 0 0 12 22Z"
+            d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v2.25L2 10.5h12l-1.5-2.25V6A4.5 4.5 0 0 0 8 1.5Z"
             stroke="currentColor"
-            strokeWidth="1.5"
+            strokeWidth="1.3"
             strokeLinejoin="round"
         />
         <path
-            d="M18 16v-5a6 6 0 1 0-12 0v5l-2 2h16l-2-2Z"
+            d="M6.5 10.5a1.5 1.5 0 0 0 3 0"
             stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinejoin="round"
+            strokeWidth="1.3"
+            strokeLinecap="round"
         />
     </svg>
 );
 
-const PlusIcon = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+const LogoutIcon = () => (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M10.5 5L14 8l-3.5 3M14 8H6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
 );
 
-function isElevatedRole(roleName?: string) {
-    return (
-        roleName === 'Administrator' ||
-        roleName === 'Scrum Master' ||
-        roleName === 'ScrumMaster'
-    );
+const KanbanMark = () => (
+    <svg width="28" height="28" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="36" height="36" rx="8" stroke="#C4933F" strokeWidth="1.2" opacity="0.5" />
+        <rect x="7" y="7" width="26" height="26" rx="5" fill="#C4933F" opacity="0.08" />
+        <rect x="9" y="14" width="6" height="9" rx="1.5" fill="#C4933F" />
+        <rect x="17" y="14" width="6" height="13" rx="1.5" fill="#C4933F" opacity="0.65" />
+        <rect x="25" y="14" width="6" height="5" rx="1.5" fill="#C4933F" opacity="0.35" />
+        <rect x="9" y="11" width="22" height="1.5" rx="0.75" fill="#C4933F" opacity="0.3" />
+    </svg>
+);
+
+function formatNotifTime(iso: string): string {
+    try {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "";
+        const now = Date.now();
+        const diffMs = now - d.getTime();
+        if (diffMs < 60_000) return "Just now";
+        if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
+        if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
+        return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    } catch {
+        return "";
+    }
 }
-
-type NotificationReceivedSignalRPayload = {
-    notificationID?: number;
-    NotificationID?: number;
-    notificationType?: string;
-    NotificationType?: string;
-    message?: string;
-    Message?: string;
-    relatedWorkItemID?: number | null;
-    RelatedWorkItemID?: number | null;
-    relatedSprintID?: number | null;
-    RelatedSprintID?: number | null;
-    isRead?: boolean;
-    IsRead?: boolean;
-    createdAt?: string;
-    CreatedAt?: string;
-};
-
-type NotificationReadSignalRPayload = {
-    userID?: number;
-    UserID?: number;
-    unreadCount?: number;
-    UnreadCount?: number;
-    updatedAt?: string;
-    UpdatedAt?: string;
-};
 
 export default function Header() {
     const [unreadCount, setUnreadCount] = useState(0);
-    const [notifOpen, setNotifOpen] = useState(false);
-    const [notifLoading, setNotifLoading] = useState(false);
+    const [panelOpen, setPanelOpen] = useState(false);
+    const [panelPos, setPanelPos] = useState({ top: 0, right: 0 });
     const [notifItems, setNotifItems] = useState<NotificationListItem[]>([]);
-    const [notifFetchError, setNotifFetchError] = useState('');
+    const [notifLoading, setNotifLoading] = useState(false);
+    const [notifError, setNotifError] = useState<string | null>(null);
+    const [markingAll, setMarkingAll] = useState(false);
+    const [toasts, setToasts] = useState<Array<{ id: string; title: string; message: string }>>([]);
 
-    const [me, setMe] = useState<UserProfile | null>(null);
-    const [addPickerOpen, setAddPickerOpen] = useState(false);
-    const [addModalOpen, setAddModalOpen] = useState(false);
-    const [addMode, setAddMode] = useState<AddItemMode>('epic');
+    const bellRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const panelOpenRef = useRef(false);
+    panelOpenRef.current = panelOpen;
 
-    const notifWrapRef = useRef<HTMLDivElement | null>(null);
-    const meRef = useRef<UserProfile | null>(null);
-    meRef.current = me;
+    const { theme, toggleTheme } = useTheme();
+    const { user } = useAuth();
+    const isDark = theme === "dark";
 
-    const canCreate = useMemo(() => isElevatedRole(me?.roleName), [me?.roleName]);
-
-    useEffect(() => {
-        let cancelled = false;
-        getCurrentUser()
-            .then((u) => {
-                if (cancelled) return;
-                setMe(u);
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setMe(null);
-            });
-        return () => { cancelled = true; };
-    }, []);
-
-    useEffect(() => {
-        let cancelled = false;
-        getUnreadNotificationCount()
-            .then((res) => {
-                if (cancelled) return;
-                setUnreadCount(res.unreadCount);
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setUnreadCount(0);
-            });
-        return () => { cancelled = true; };
-    }, []);
-
-    const loadNotifications = async () => {
-        setNotifFetchError('');
-        setNotifLoading(true);
+    const refreshUnreadCount = useCallback(async () => {
         try {
-            const res: NotificationListResponse = await getMyNotifications({ page: 1, pageSize: 10 });
-            setNotifItems(res.items ?? []);
-        } catch (err) {
-            setNotifFetchError(err instanceof Error ? err.message : 'Failed to load notifications.');
+            const result = await getUnreadNotificationCount();
+            setUnreadCount(result.unreadCount);
+        } catch {
+            setUnreadCount(0);
+        }
+    }, []);
+
+    const loadNotificationsList = useCallback(async () => {
+        setNotifLoading(true);
+        setNotifError(null);
+        try {
+            const res = await getMyNotifications({ page: 1, pageSize: 30 });
+            setNotifItems(Array.isArray(res.items) ? res.items : []);
+            setUnreadCount(typeof res.unreadCount === "number" ? res.unreadCount : 0);
+        } catch (e) {
+            setNotifError(e instanceof ApiError ? e.message : "Could not load notifications.");
+            setNotifItems([]);
         } finally {
             setNotifLoading(false);
         }
-    };
+    }, []);
+
+    const repositionPanel = useCallback(() => {
+        const el = bellRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        setPanelPos({ top: r.bottom + 8, right: window.innerWidth - r.right });
+    }, []);
+
+    const toggleNotificationsPanel = useCallback(() => {
+        setPanelOpen((prev) => {
+            const next = !prev;
+            if (next) {
+                requestAnimationFrame(() => {
+                    const el = bellRef.current;
+                    if (el) {
+                        const r = el.getBoundingClientRect();
+                        setPanelPos({ top: r.bottom + 8, right: window.innerWidth - r.right });
+                    }
+                });
+            }
+            return next;
+        });
+    }, []);
+
+    const toastIdRef = useRef(0);
+    const toastTimeoutsRef = useRef<Map<string, number>>(new Map());
+
+    const dismissToast = useCallback((id: string) => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+        const tid = toastTimeoutsRef.current.get(id);
+        if (tid !== undefined) {
+            window.clearTimeout(tid);
+            toastTimeoutsRef.current.delete(id);
+        }
+    }, []);
+
+    const pushToast = useCallback(
+        (title: string, message: string) => {
+            const id = `n-${++toastIdRef.current}`;
+            setToasts((prev) => [...prev.slice(-4), { id, title, message }]);
+            const tid = window.setTimeout(() => {
+                dismissToast(id);
+            }, 5200);
+            toastTimeoutsRef.current.set(id, tid);
+        },
+        [dismissToast],
+    );
 
     useEffect(() => {
-        if (!notifOpen) return;
-        void loadNotifications();
-    }, [notifOpen]);
-
-    useEffect(() => {
-        const onPointerDown = (e: PointerEvent) => {
-            if (!notifWrapRef.current) return;
-            if (notifWrapRef.current.contains(e.target as Node)) return;
-            setNotifOpen(false);
+        return () => {
+            toastTimeoutsRef.current.forEach((t) => window.clearTimeout(t));
+            toastTimeoutsRef.current.clear();
         };
-        window.addEventListener('pointerdown', onPointerDown);
-        return () => window.removeEventListener('pointerdown', onPointerDown);
     }, []);
 
     useEffect(() => {
+        void refreshUnreadCount();
+        const onChanged = () => {
+            void refreshUnreadCount();
+        };
+        window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged);
+        return () => window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged);
+    }, [refreshUnreadCount]);
+
+    useEffect(() => {
+        if (!panelOpen) return;
+        void loadNotificationsList();
+    }, [panelOpen, loadNotificationsList]);
+
+    useEffect(() => {
+        if (!panelOpen) return;
+        const onResize = () => repositionPanel();
+        window.addEventListener("resize", onResize);
+        return () => window.removeEventListener("resize", onResize);
+    }, [panelOpen, repositionPanel]);
+
+    useEffect(() => {
+        if (!panelOpen) return;
+        const onDown = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (bellRef.current?.contains(t)) return;
+            if (panelRef.current?.contains(t)) return;
+            setPanelOpen(false);
+        };
+        document.addEventListener("mousedown", onDown);
+        return () => document.removeEventListener("mousedown", onDown);
+    }, [panelOpen]);
+
+    useEffect(() => {
+        if (!panelOpen) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setPanelOpen(false);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [panelOpen]);
+
+    useEffect(() => {
+        if (!user) return;
         const conn = getNotificationHubConnection();
 
-        const handleReceived = (payload: unknown) => {
-            const p = payload as NotificationReceivedSignalRPayload;
-            const id: number | undefined = p.notificationID ?? p.NotificationID;
-            const isRead: boolean = p.isRead ?? p.IsRead ?? false;
-            const type: string = p.notificationType ?? p.NotificationType ?? '';
-            const message: string = p.message ?? p.Message ?? '';
-            const createdAt: string = p.createdAt ?? p.CreatedAt ?? new Date().toISOString();
-            const relatedWorkItemID: number | null = p.relatedWorkItemID ?? p.RelatedWorkItemID ?? null;
-            const relatedSprintID: number | null = p.relatedSprintID ?? p.RelatedSprintID ?? null;
-
-            if (typeof id !== 'number') return;
-
-            // Update badge count.
-            if (!isRead) setUnreadCount((prev) => prev + 1);
-
-            // Update dropdown list (if open).
-            const item: NotificationListItem = {
-                notificationID: id,
-                notificationType: type,
-                message,
-                relatedWorkItemID,
-                relatedSprintID,
-                isRead,
-                createdAt,
-            };
-            setNotifItems((prev) => {
-                const withoutDup = prev.filter((x) => x.notificationID !== id);
-                return [item, ...withoutDup].slice(0, 10);
-            });
+        const onReceived = (dto: unknown) => {
+            const { title, message } = parseNotificationBroadcast(dto);
+            pushToast(title, message);
+            playNotificationChime();
+            void refreshUnreadCount();
+            if (panelOpenRef.current) void loadNotificationsList();
         };
 
-        const handleRead = (payload: unknown) => {
-            const p = payload as NotificationReadSignalRPayload;
-            const userID: number | undefined = p.userID ?? p.UserID;
-            const unread: number | undefined = p.unreadCount ?? p.UnreadCount;
-
-            const currentUserId = meRef.current?.userID;
-            if (typeof userID === 'number' && currentUserId && userID !== currentUserId) return;
-            if (typeof unread === 'number') setUnreadCount(unread);
-
-            setNotifItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+        const onReadBroadcast = (dto: Record<string, unknown>) => {
+            const c = dto?.unreadCount ?? dto?.UnreadCount;
+            if (typeof c === "number") setUnreadCount(c);
+            else void refreshUnreadCount();
         };
 
-        const start = async () => {
+        conn.on("NotificationReceived", onReceived);
+        conn.on("NotificationRead", onReadBroadcast);
+
+        void (async () => {
             try {
-                if (conn.state === 'Disconnected') {
+                if (conn.state === signalR.HubConnectionState.Disconnected) {
                     await conn.start();
                 }
             } catch {
-                // ignore; UI will still work via polling endpoints
+                /* hub optional when unavailable */
             }
-            conn.on('NotificationReceived', handleReceived);
-            conn.on('NotificationRead', handleRead);
-        };
-
-        void start();
+        })();
 
         return () => {
-            conn.off('NotificationReceived', handleReceived);
-            conn.off('NotificationRead', handleRead);
+            conn.off("NotificationReceived", onReceived);
+            conn.off("NotificationRead", onReadBroadcast);
         };
-    }, []);
+    }, [user, refreshUnreadCount, loadNotificationsList, pushToast]);
+
+    const handleMarkOneRead = async (item: NotificationListItem) => {
+        if (item.isRead) return;
+        try {
+            await markNotificationRead(item.notificationID);
+            setNotifItems((prev) =>
+                prev.map((n) => (n.notificationID === item.notificationID ? { ...n, isRead: true } : n)),
+            );
+            setUnreadCount((c) => Math.max(0, c - 1));
+        } catch (e) {
+            setNotifError(e instanceof ApiError ? e.message : "Could not mark as read.");
+        }
+    };
 
     const handleMarkAllRead = async () => {
+        setMarkingAll(true);
+        setNotifError(null);
         try {
             await markAllNotificationsRead();
             setNotifItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
             setUnreadCount(0);
-        } catch (err) {
-            setNotifFetchError(err instanceof Error ? err.message : 'Failed to mark all as read.');
+        } catch (e) {
+            setNotifError(e instanceof ApiError ? e.message : "Could not mark all as read.");
+        } finally {
+            setMarkingAll(false);
         }
     };
 
-    const handleMarkRead = async (id: number) => {
+    async function handleLogout() {
         try {
-            await markNotificationRead(id);
-            setNotifItems((prev) => prev.map((n) => (n.notificationID === id ? { ...n, isRead: true } : n)));
-            setUnreadCount((prev) => Math.max(0, prev - 1));
-        } catch (err) {
-            setNotifFetchError(err instanceof Error ? err.message : 'Failed to mark notification as read.');
+            await logout();
+        } finally {
+            window.location.href = "/login";
         }
-    };
+    }
 
-    const openCreate = (mode: AddItemMode) => {
-        setAddMode(mode);
-        setAddPickerOpen(false);
-        setAddModalOpen(true);
-    };
+    const initials = user?.fullName
+        ? user.fullName.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
+        : "?";
+
+    const notifPanel =
+        panelOpen &&
+        createPortal(
+            <div
+                ref={panelRef}
+                className="app-notif-panel"
+                role="dialog"
+                aria-modal="false"
+                aria-labelledby="app-notif-panel-title"
+                style={{ top: panelPos.top, right: panelPos.right }}
+            >
+                <div className="app-notif-panel-header">
+                    <h2 id="app-notif-panel-title" className="app-notif-panel-title">
+                        Notifications
+                    </h2>
+                    {unreadCount > 0 ? (
+                        <button
+                            type="button"
+                            className="app-notif-panel-action"
+                            onClick={() => void handleMarkAllRead()}
+                            disabled={markingAll || notifLoading}
+                        >
+                            {markingAll ? "Marking…" : "Mark all read"}
+                        </button>
+                    ) : null}
+                </div>
+                <div className="app-notif-panel-body">
+                    {notifLoading && notifItems.length === 0 ? (
+                        <div className="app-notif-panel-empty">Loading…</div>
+                    ) : null}
+                    {notifError ? (
+                        <div className="app-notif-panel-error" role="alert">
+                            {notifError}
+                        </div>
+                    ) : null}
+                    {!notifLoading && notifItems.length === 0 && !notifError ? (
+                        <div className="app-notif-panel-empty">You&apos;re all caught up.</div>
+                    ) : null}
+                    <ul className="app-notif-list">
+                        {notifItems.map((item) => (
+                            <li key={item.notificationID}>
+                                <button
+                                    type="button"
+                                    className={`app-notif-item${item.isRead ? "" : " app-notif-item--unread"}`}
+                                    onClick={() => {
+                                        if (!item.isRead) void handleMarkOneRead(item);
+                                    }}
+                                    aria-label={`${item.notificationType}. ${item.message}`}
+                                >
+                                    <span className="app-notif-item-type">{item.notificationType}</span>
+                                    <span className="app-notif-item-msg">{item.message}</span>
+                                    <span className="app-notif-item-time">{formatNotifTime(item.createdAt)}</span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>,
+            document.body,
+        );
+
+    const toastPortal =
+        toasts.length > 0
+            ? createPortal(
+                  <div
+                      className="app-notif-toast-stack"
+                      role="region"
+                      aria-label="Incoming notifications"
+                      aria-live="polite"
+                  >
+                      {toasts.map((t) => (
+                          <div key={t.id} className="app-notif-toast" role="status">
+                              <button
+                                  type="button"
+                                  className="app-notif-toast-dismiss"
+                                  onClick={() => dismissToast(t.id)}
+                                  aria-label="Dismiss notification"
+                              >
+                                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                      <path
+                                          d="M1 1l10 10M11 1L1 11"
+                                          stroke="currentColor"
+                                          strokeWidth="1.4"
+                                          strokeLinecap="round"
+                                      />
+                                  </svg>
+                              </button>
+                              <div className="app-notif-toast-title">{t.title}</div>
+                              <p className="app-notif-toast-msg">{t.message}</p>
+                          </div>
+                      ))}
+                  </div>,
+                  document.body,
+              )
+            : null;
 
     return (
         <header className="app-header">
-            <div className="app-header-brand">
-                <div className="app-header-brand-site">Sitesphil</div>
-                <div className="app-header-brand-product">Digital Scrum Board</div>
-                <div className="app-header-subtitle">Planning workspace</div>
+            <div className="app-header-left">
+                <div className="app-header-brand">
+                    <KanbanMark />
+                    <div className="app-header-brand-text">
+                        <span className="app-header-brand-name">Digital Scrum Board</span>
+                        <span className="app-header-brand-sub">Agile Sprint Management</span>
+                    </div>
+                </div>
             </div>
 
-            <div className="app-header-actions" ref={notifWrapRef}>
-                <div className="notif-pill" style={{ position: 'relative' }}>
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        onClick={() => setNotifOpen((v) => !v)}
-                        aria-haspopup="dialog"
-                        aria-expanded={notifOpen}
-                        aria-label="Open notifications"
-                    >
-                        <BellIcon />
-                        <span style={{ fontWeight: 800 }}>Notifications</span>
-                        <span className="notif-badge">{unreadCount}</span>
-                    </button>
+            <div className="app-header-right">
+                <button
+                    ref={bellRef}
+                    type="button"
+                    className="app-header-icon-btn"
+                    aria-label={
+                        unreadCount > 0
+                            ? `${unreadCount} unread notification${unreadCount === 1 ? "" : "s"}`
+                            : "Notifications"
+                    }
+                    aria-expanded={panelOpen}
+                    aria-haspopup="dialog"
+                    title="Notifications"
+                    onClick={toggleNotificationsPanel}
+                >
+                    <BellIcon />
+                    {unreadCount > 0 ? (
+                        <span className="app-header-badge">{unreadCount > 99 ? "99+" : unreadCount}</span>
+                    ) : null}
+                </button>
 
-                    {notifOpen && (
-                        <div className="dropdown" role="region" aria-label="Notifications">
-                            <div className="dropdown-header">
-                                <div className="dropdown-header-title">Your updates</div>
-                                <button
-                                    type="button"
-                                    className="btn-ghost"
-                                    onClick={handleMarkAllRead}
-                                    disabled={notifLoading || unreadCount === 0}
-                                >
-                                    Mark all read
-                                </button>
-                            </div>
+                {notifPanel}
+                {toastPortal}
 
-                            <div className="dropdown-body">
-                                {notifFetchError ? (
-                                    <div className="form-error" style={{ marginBottom: 10 }}>
-                                        {notifFetchError}
-                                    </div>
-                                ) : null}
+                <button
+                    type="button"
+                    className="app-header-icon-btn"
+                    onClick={toggleTheme}
+                    aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+                    title={isDark ? "Light mode" : "Dark mode"}
+                >
+                    {isDark ? <SunIcon /> : <MoonIcon />}
+                </button>
 
-                                {notifLoading ? (
-                                    <div>
-                                        {Array.from({ length: 5 }).map((_, i) => (
-                                            <div className="loading-skel" key={i} style={{ marginBottom: 10 }} />
-                                        ))}
-                                    </div>
-                                ) : null}
+                <div className="app-header-divider" aria-hidden="true" />
 
-                                {!notifLoading && notifItems.length === 0 ? (
-                                    <div className="scroll-empty">No notifications.</div>
-                                ) : null}
-
-                                {!notifLoading &&
-                                    notifItems.map((n) => (
-                                        <div
-                                            key={n.notificationID}
-                                            className={`notif-item${n.isRead ? '' : ' notif-item--unread'}`}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={() => {
-                                                if (!n.isRead) void handleMarkRead(n.notificationID);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' || e.key === ' ') {
-                                                    if (!n.isRead) void handleMarkRead(n.notificationID);
-                                                }
-                                            }}
-                                        >
-                                            <div className="notif-item-top">
-                                                <span className="notif-item-type">{n.notificationType}</span>
-                                                <span className="notif-item-time">
-                                                    {n.createdAt ? new Date(n.createdAt).toLocaleString() : ''}
-                                                </span>
-                                            </div>
-                                            <div className="notif-item-message">{n.message}</div>
-                                        </div>
-                                    ))}
-                            </div>
+                {user ? (
+                    <div className="app-header-user">
+                        <div className="app-header-avatar" aria-hidden="true">
+                            {initials}
                         </div>
-                    )}
-                </div>
-
-                <div style={{ position: 'relative' }}>
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        onClick={() => setAddPickerOpen((v) => !v)}
-                        aria-haspopup="menu"
-                        aria-expanded={addPickerOpen}
-                        disabled={!canCreate}
-                        title={canCreate ? 'Create items' : 'You do not have permission to create items.'}
-                    >
-                        <PlusIcon />
-                        <span style={{ fontWeight: 900 }}>Add Item</span>
-                    </button>
-
-                    {addPickerOpen && (
-                        <div className="menu-popover" role="menu" aria-label="Create item">
-                            <button className="menu-item" type="button" role="menuitem" onClick={() => openCreate('epic')}>
-                                <span>Create Epic</span>
-                                <span aria-hidden="true">→</span>
-                            </button>
-                            <button className="menu-item" type="button" role="menuitem" onClick={() => openCreate('story')}>
-                                <span>Create Work Item</span>
-                                <span aria-hidden="true">→</span>
-                            </button>
-                            <button className="menu-item" type="button" role="menuitem" onClick={() => openCreate('sprint')}>
-                                <span>Create Sprint</span>
-                                <span aria-hidden="true">→</span>
-                            </button>
+                        <div className="app-header-user-info">
+                            <span className="app-header-user-name">{user.fullName}</span>
+                            <span className="app-header-user-role">{user.roleName}</span>
                         </div>
-                    )}
-                </div>
+                    </div>
+                ) : null}
 
-                <AddItemModal
-                    open={addModalOpen}
-                    mode={addMode}
-                    onClose={() => setAddModalOpen(false)}
-                    me={me}
-                    onSuccess={() => {
-                        // Lightweight: refresh epic tiles/sprints from BacklogsPage via SignalR.
-                    }}
-                />
+                <button
+                    type="button"
+                    className="app-header-logout-btn"
+                    onClick={handleLogout}
+                    title="Sign out"
+                    aria-label="Sign out"
+                >
+                    <LogoutIcon />
+                    <span>Sign out</span>
+                </button>
             </div>
         </header>
     );

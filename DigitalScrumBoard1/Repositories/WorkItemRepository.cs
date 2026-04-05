@@ -1,4 +1,4 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs.WorkItems;
 using DigitalScrumBoard1.Models;
 using Microsoft.EntityFrameworkCore;
@@ -367,7 +367,9 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 Status = w.Status ?? "",
                 Priority = w.Priority,
                 ParentWorkItemID = w.ParentWorkItemID,
-                SprintID = w.SprintID
+                SprintID = w.SprintID,
+                TeamID = w.TeamID,
+                AssignedUserID = w.AssignedUserID
             })
             .ToListAsync(ct);
 
@@ -381,6 +383,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 sprint.WorkItems = items;
         }
 
+        // Backlog: Story/Task with no sprint and not completed.
         var backlogWorkItems = await (
             from w in _db.WorkItems.AsNoTracking()
             join wt in _db.WorkItemTypes.AsNoTracking()
@@ -398,7 +401,9 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 Status = w.Status ?? "",
                 Priority = w.Priority,
                 ParentWorkItemID = w.ParentWorkItemID,
-                SprintID = w.SprintID
+                SprintID = w.SprintID,
+                TeamID = w.TeamID,
+                AssignedUserID = w.AssignedUserID
             })
             .ToListAsync(ct);
 
@@ -831,6 +836,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 sprint.WorkItems = items;
         }
 
+        // Backlog: Story/Task with no sprint and not completed.
         var backlogWorkItemsQuery = (
             from w in _db.WorkItems.AsNoTracking()
             join wt in _db.WorkItemTypes.AsNoTracking()

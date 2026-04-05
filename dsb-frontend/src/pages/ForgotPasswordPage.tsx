@@ -13,6 +13,7 @@ import PasswordStrengthMeter from '../components/auth/PasswordStrengthMeter';
 import { checkPasswordStrength, isPasswordValid } from '../components/auth/passwordStrengthUtils';
 import { forgotPassword, verifyResetCode, resetPassword } from '../api/authApi';
 import { ApiError } from '../services/apiClient';
+import { validateEmailAddress } from '../utils/validateEmail';
 
 // ── Icons ─────────────────────────────────────
 
@@ -163,15 +164,7 @@ export default function ForgotPasswordPage() {
     const [emailTouched, setEmailTouched] = useState(false);
 
     // ── Step 1: request reset email ─────────────
-    const emailError = emailTouched
-        ? (!email.trim()
-            ? 'Email address is required.'
-            : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-                ? 'Enter a valid email address.'
-                : email.length > 100
-                    ? 'Email must be 100 characters or fewer.'
-                    : undefined)
-        : undefined;
+    const emailError = emailTouched ? validateEmailAddress(email) : undefined;
 
     const handleRequestCode = useCallback(
         async (e: FormEvent) => {

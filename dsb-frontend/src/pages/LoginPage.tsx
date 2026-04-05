@@ -11,6 +11,7 @@ import CountdownBanner, { StatusBanner } from '../components/auth/CountdownBanne
 import { login } from '../api/authApi';
 import { ApiError } from '../services/apiClient';
 import type { UserProfile } from '../types/auth';
+import { validateEmailAddress } from '../utils/validateEmail';
 
 // ─────────────────────────────────────────────
 // Icons
@@ -54,9 +55,7 @@ type AlertState =
 // ─────────────────────────────────────────────
 
 function validateEmail(v: string): string | undefined {
-    if (!v.trim()) return 'Email address is required.';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return 'Enter a valid email address.';
-    if (v.length > 100) return 'Email address must be 100 characters or fewer.';
+    return validateEmailAddress(v);
 }
 
 function validatePassword(v: string): string | undefined {

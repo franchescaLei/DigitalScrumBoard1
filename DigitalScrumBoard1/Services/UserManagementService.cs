@@ -611,8 +611,9 @@ namespace DigitalScrumBoard1.Services
             return "Account lockout applied.";
         }
 
+        /// <summary>Notify all connected clients so every open tab (e.g. multiple admins) refetches directory data.</summary>
         private Task NotifyAdminsDirectoryChangedAsync(string reason, CancellationToken ct)
-            => _hub.Clients.Group("admins").SendAsync("AdminDirectoryChanged", new { reason }, ct);
+            => _hub.Clients.All.SendAsync("AdminDirectoryChanged", new { reason }, ct);
 
         private static List<UserAdminRow> ApplyUserSorting(
             List<UserAdminRow> rows,

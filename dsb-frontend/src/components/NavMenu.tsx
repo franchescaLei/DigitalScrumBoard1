@@ -1,189 +1,101 @@
-import { useEffect, useMemo, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
-import { getCurrentUser, logout } from '../api/authApi';
-import type { UserProfile } from '../types/auth';
-import '../styles/app-shell.css';
+import { NavLink } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { isAdministrator } from "../utils/userProfile";
 
-const IconBacklogs = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-            d="M4 6h16M4 12h10M4 18h16"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-        />
+const BacklogIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2" y="3" width="12" height="1.5" rx="0.75" fill="currentColor" />
+        <rect x="2" y="7.25" width="9" height="1.5" rx="0.75" fill="currentColor" />
+        <rect x="2" y="11.5" width="11" height="1.5" rx="0.75" fill="currentColor" />
     </svg>
 );
 
-const IconBoards = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-            d="M4 6h16v12H4V6Z"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinejoin="round"
-        />
-        <path d="M9 6v12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        <path d="M15 6v12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+const BoardIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="1.5" y="3" width="4" height="9" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="6" y="3" width="4" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="10.5" y="3" width="4" height="4" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
     </svg>
 );
 
-const IconProfile = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-            d="M20 21a8 8 0 0 0-16 0"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-        />
-        <path
-            d="M12 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinejoin="round"
-        />
+const UserMgmtIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="6" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M1.5 13c0-2.485 2.015-4.5 4.5-4.5S10.5 10.515 10.5 13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <path d="M12 7v4M10 9h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
 );
 
-const IconUsers = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-            d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-        />
-        <path
-            d="M9 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinejoin="round"
-        />
-        <path
-            d="M22 21v-2a4 4 0 0 0-3-3.87"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-        />
-        <path
-            d="M16 3.13a4 4 0 0 1 0 7.75"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-        />
+const AuditIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2.5" y="2" width="11" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+        <line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        <line x1="5" y1="8.5" x2="11" y2="8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        <line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
 );
-
-const IconAudit = () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-            d="M9 11l2 2 4-4"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        />
-        <path
-            d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9Z"
-            stroke="currentColor"
-            strokeWidth="1.6"
-        />
-    </svg>
-);
-
-function isAdmin(roleName?: string) {
-    return roleName === 'Administrator';
-}
 
 export default function NavMenu() {
-    const navigate = useNavigate();
-    const [me, setMe] = useState<UserProfile | null>(null);
-
-    useEffect(() => {
-        let cancelled = false;
-        getCurrentUser()
-            .then((u) => {
-                if (cancelled) return;
-                setMe(u);
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setMe(null);
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-
-    const adminOnly = useMemo(() => isAdmin(me?.roleName), [me?.roleName]);
-
-    const handleLogout = async () => {
-        await logout();
-        navigate('/login', { replace: true });
-    };
+    const { user } = useAuth();
+    const isAdmin = isAdministrator(user);
 
     return (
         <aside className="app-sidebar">
-            <div className="sidebar-user">
-                <div className="sidebar-user-name">{me?.fullName ?? 'User'}</div>
-                <div className="sidebar-user-meta">
-                    <span>Role: {me?.roleName ?? '—'}</span>
-                    <span>Team: {me?.teamID ?? '—'}</span>
+            <nav className="app-nav" aria-label="Main navigation">
+                <div className="app-nav-section">
+                    <span className="app-nav-section-label">Workspace</span>
+
+                    <NavLink
+                        to="/backlogs"
+                        className={({ isActive }) =>
+                            `app-nav-link${isActive ? " app-nav-link--active" : ""}`
+                        }
+                    >
+                        <span className="app-nav-icon"><BacklogIcon /></span>
+                        <span>Backlogs</span>
+                    </NavLink>
+
+                    <NavLink
+                        to="/boards"
+                        className={({ isActive }) =>
+                            `app-nav-link${isActive ? " app-nav-link--active" : ""}`
+                        }
+                    >
+                        <span className="app-nav-icon"><BoardIcon /></span>
+                        <span>Boards</span>
+                    </NavLink>
                 </div>
-            </div>
 
-            <nav className="sidebar-nav">
-                <NavLink
-                    to="/backlogs"
-                    className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
-                >
-                    <IconBacklogs />
-                    <span>Backlogs</span>
-                </NavLink>
+                {isAdmin && (
+                    <div className="app-nav-section">
+                        <span className="app-nav-section-label">Administration</span>
 
-                <NavLink
-                    to="/boards"
-                    className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
-                >
-                    <IconBoards />
-                    <span>Boards</span>
-                </NavLink>
-
-                <NavLink
-                    to="/profile"
-                    className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
-                >
-                    <IconProfile />
-                    <span>Profile Settings</span>
-                </NavLink>
-
-                {adminOnly ? (
-                    <>
                         <NavLink
-                            to="/admin?tab=users"
-                            className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
+                            to="/admin/users"
+                            className={({ isActive }) =>
+                                `app-nav-link${isActive ? " app-nav-link--active" : ""}`
+                            }
                         >
-                            <IconUsers />
+                            <span className="app-nav-icon"><UserMgmtIcon /></span>
                             <span>User Management</span>
                         </NavLink>
 
                         <NavLink
-                            to="/admin?tab=audit"
-                            className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
+                            to="/admin/audit"
+                            className={({ isActive }) =>
+                                `app-nav-link${isActive ? " app-nav-link--active" : ""}`
+                            }
                         >
-                            <IconAudit />
+                            <span className="app-nav-icon"><AuditIcon /></span>
                             <span>Audit Logs</span>
                         </NavLink>
-                    </>
-                ) : null}
+                    </div>
+                )}
             </nav>
 
-            <div className="sidebar-spacer" />
-
-            <button type="button" className="sidebar-link sidebar-logout" onClick={handleLogout}>
-                Sign out
-            </button>
+            <div className="app-sidebar-footer">
+                <div className="app-sidebar-version">DSB v1.0</div>
+            </div>
         </aside>
     );
 }

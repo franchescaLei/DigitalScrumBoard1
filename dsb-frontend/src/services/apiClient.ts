@@ -5,7 +5,8 @@
 // Credentials must always be included
 // ─────────────────────────────────────────────
 
-const BASE_URL = 'https://localhost:7127';
+export const API_BASE_URL = 'https://localhost:7127';
+const BASE_URL = API_BASE_URL;
 
 // ── Typed API error ───────────────────────────
 export class ApiError extends Error {

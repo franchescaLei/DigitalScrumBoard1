@@ -46,8 +46,17 @@ export interface RoleListItem {
 
 export interface PatchUserAccessBody {
     roleID?: number;
-    teamID?: number;
+    teamID?: number | null;
     removeFromTeam?: boolean;
+}
+
+/** Response shape from PATCH /api/users/{id}/access (Ok result). */
+export interface PatchUserAccessResponse {
+    message?: string;
+    userID?: number;
+    emailAddress?: string;
+    teamID?: number | null;
+    teamName?: string | null;
 }
 
 async function fetchAllPages<T>(
@@ -89,7 +98,7 @@ export function enableUser(userId: number): Promise<{ message: string }> {
     return apiClient.patch(`/api/users/${userId}/enable`);
 }
 
-export function patchUserAccess(userId: number, body: PatchUserAccessBody): Promise<unknown> {
+export function patchUserAccess(userId: number, body: PatchUserAccessBody): Promise<PatchUserAccessResponse> {
     return apiClient.patch(`/api/users/${userId}/access`, body);
 }
 
@@ -103,4 +112,19 @@ export function forceLockout(userId: number): Promise<{ message: string }> {
 
 export function createTeam(teamName: string): Promise<unknown> {
     return apiClient.post('/api/teams', { teamName });
+}
+
+/** POST /api/users — matches CreateUserRequestDto (camelCase JSON). */
+export interface CreateUserBody {
+    firstName: string;
+    lastName: string;
+    emailAddress: string;
+    roleID: number;
+    teamID: number;
+    middleName?: string | null;
+    nameExtension?: string | null;
+}
+
+export function createUser(body: CreateUserBody): Promise<unknown> {
+    return apiClient.post('/api/users', body);
 }

@@ -20,11 +20,17 @@ import {
 } from '../api/sprintsApi';
 import type { AgendaWorkItem, EpicTile, SprintSummary } from '../types/planning';
 import type { UserProfile } from '../types/auth';
+import { isElevatedWorkspaceRole } from '../utils/userProfile';
 import { getBoardHubConnection } from '../services/boardHub';
 import '../styles/backlogs.css';
 
 const STORY_TYPE = 'Story';
 const TASK_TYPE = 'Task';
+
+/** Matches backend type names regardless of casing / stray whitespace. */
+function normTypeName(w: Pick<AgendaWorkItem, 'typeName'>): string {
+    return (w.typeName ?? '').trim().toLowerCase();
+}
 
 type UserLookup = {
     userID: number;
@@ -51,17 +57,9 @@ function computeDurationDays(startDate: string | null | undefined, endDate: stri
     return days >= 0 ? days : null;
 }
 
-function isElevatedRole(roleName?: string) {
-    return (
-        roleName === 'Administrator' ||
-        roleName === 'Scrum Master' ||
-        roleName === 'ScrumMaster'
-    );
-}
-
 function canManageSprint(me: UserProfile | null, sprint: SprintSummary) {
     if (!me) return false;
-    if (isElevatedRole(me.roleName)) return true;
+    if (isElevatedWorkspaceRole(me)) return true;
     if (me.userID && sprint.managedBy !== null && sprint.managedBy === me.userID) return true;
     return false;
 }
@@ -135,17 +133,14 @@ export default function BacklogsPage() {
         return () => { cancelled = true; };
     }, []);
 
-    // Close the sprint 3-dots action menu when clicking outside.
     useEffect(() => {
         if (sprintMenuOpenId === null) return;
-
         const onPointerDown = (e: PointerEvent) => {
             if (!sprintMenuRef.current) return;
             const target = e.target as Node;
             if (sprintMenuRef.current.contains(target)) return;
             setSprintMenuOpenId(null);
         };
-
         window.addEventListener('pointerdown', onPointerDown);
         return () => window.removeEventListener('pointerdown', onPointerDown);
     }, [sprintMenuOpenId]);
@@ -213,7 +208,13 @@ export default function BacklogsPage() {
             });
             setBacklogItems(res.workItems);
         } catch (err) {
-            setBacklogError(err instanceof Error ? err.message : 'Failed to load backlog.');
+            setBacklogError(
+                err instanceof ApiError
+                    ? err.message
+                    : err instanceof Error
+                      ? err.message
+                      : 'Failed to load backlog.',
+            );
         } finally {
             setBacklogLoading(false);
         }
@@ -228,16 +229,19 @@ export default function BacklogsPage() {
     }, [backlogItems, backlogTitleSearch]);
 
     const stories = useMemo(
-        () => visibleBacklog.filter((w) => w.typeName === STORY_TYPE),
+        () => visibleBacklog.filter((w) => normTypeName(w) === STORY_TYPE.toLowerCase()),
         [visibleBacklog],
     );
 
+    const storyIdSet = useMemo(() => new Set(stories.map((s) => s.workItemID)), [stories]);
+
+    /** Tasks nested under a Story that appears in this backlog. */
     const tasksByParentStoryId = useMemo(() => {
         const map = new Map<number, AgendaWorkItem[]>();
         for (const w of visibleBacklog) {
-            if (w.typeName !== TASK_TYPE) continue;
+            if (normTypeName(w) !== TASK_TYPE.toLowerCase()) continue;
             const parent = w.parentWorkItemID;
-            if (!parent) continue;
+            if (parent == null) continue;
             const arr = map.get(parent) ?? [];
             arr.push(w);
             map.set(parent, arr);
@@ -245,10 +249,24 @@ export default function BacklogsPage() {
         return map;
     }, [visibleBacklog]);
 
+    /**
+     * Tasks not shown under a story row: no parent, parent is an Epic, or parent story is not in the backlog list.
+     */
+    const orphanTasks = useMemo(
+        () =>
+            visibleBacklog.filter(
+                (w) =>
+                    normTypeName(w) === TASK_TYPE.toLowerCase() &&
+                    (w.parentWorkItemID == null || !storyIdSet.has(w.parentWorkItemID)),
+            ),
+        [visibleBacklog, storyIdSet],
+    );
+
+    const hasBacklogRows = stories.length > 0 || orphanTasks.length > 0;
+
     const refreshExpandedSprints = useCallback(async (ids?: number[]) => {
         const target = ids ?? Array.from(expandedSprintIds);
         if (target.length === 0) return;
-
         await Promise.all(
             target.map(async (sprintId) => {
                 setSprintWorkItemsLoadingBySprint((prev) => ({ ...prev, [sprintId]: true }));
@@ -256,7 +274,7 @@ export default function BacklogsPage() {
                     const items = await getSprintWorkItems(sprintId);
                     setSprintWorkItemsBySprint((prev) => ({ ...prev, [sprintId]: items }));
                 } catch {
-                    // ignore; will be reflected by error state if needed
+                    // ignore
                 } finally {
                     setSprintWorkItemsLoadingBySprint((prev) => ({ ...prev, [sprintId]: false }));
                 }
@@ -264,11 +282,9 @@ export default function BacklogsPage() {
         );
     }, [expandedSprintIds]);
 
-    // Real-time refresh orchestration (simple + correct).
     const refreshTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
     const scheduleRealtimeRefresh = useCallback((sprintIdHint?: number) => {
         if (refreshTimerRef.current) return;
-
         refreshTimerRef.current = window.setTimeout(async () => {
             refreshTimerRef.current = null;
             await loadBacklog();
@@ -282,35 +298,28 @@ export default function BacklogsPage() {
         }, 150);
     }, [expandedSprintIds, loadBacklog, refreshExpandedSprints]);
 
-    // Board hub real-time subscriptions.
     useEffect(() => {
         const conn = getBoardHubConnection();
-
         const handlerAnySprintEvent = () => scheduleRealtimeRefresh();
         const handlerAnyWorkEvent = () => scheduleRealtimeRefresh();
-
         const start = async () => {
             try {
                 if (conn.state === 'Disconnected') await conn.start();
             } catch {
-                // ignore; backend will still work via refetch on user actions
+                // ignore
             }
-
             conn.on('SprintCreated', handlerAnySprintEvent);
             conn.on('SprintUpdated', handlerAnySprintEvent);
             conn.on('SprintStarted', handlerAnySprintEvent);
             conn.on('SprintStopped', handlerAnySprintEvent);
             conn.on('SprintCompleted', handlerAnySprintEvent);
             conn.on('SprintDeleted', handlerAnySprintEvent);
-
             conn.on('WorkItemAssignedToSprint', handlerAnyWorkEvent);
             conn.on('WorkItemRemovedFromSprint', handlerAnyWorkEvent);
             conn.on('WorkItemUpdated', handlerAnyWorkEvent);
             conn.on('WorkItemDeleted', handlerAnyWorkEvent);
         };
-
         void start();
-
         return () => {
             conn.off('SprintCreated', handlerAnySprintEvent);
             conn.off('SprintUpdated', handlerAnySprintEvent);
@@ -318,7 +327,6 @@ export default function BacklogsPage() {
             conn.off('SprintStopped', handlerAnySprintEvent);
             conn.off('SprintCompleted', handlerAnySprintEvent);
             conn.off('SprintDeleted', handlerAnySprintEvent);
-
             conn.off('WorkItemAssignedToSprint', handlerAnyWorkEvent);
             conn.off('WorkItemRemovedFromSprint', handlerAnyWorkEvent);
             conn.off('WorkItemUpdated', handlerAnyWorkEvent);
@@ -330,38 +338,23 @@ export default function BacklogsPage() {
         async (sprintId: number) => {
             const isExpanded = expandedSprintIds.has(sprintId);
             const next = new Set(expandedSprintIds);
-
             if (isExpanded) {
                 next.delete(sprintId);
                 setExpandedSprintIds(next);
-                // Leave sprint group for real-time updates.
-                try {
-                    await getBoardHubConnection().invoke('LeaveSprintBoard', sprintId);
-                } catch {
-                    // ignore
-                }
+                try { await getBoardHubConnection().invoke('LeaveSprintBoard', sprintId); } catch { /* ignore */ }
                 return;
             }
-
             next.add(sprintId);
             setExpandedSprintIds(next);
-            try {
-                await getBoardHubConnection().invoke('JoinSprintBoard', sprintId);
-            } catch {
-                // ignore
-            }
-            // Load items when expanding.
+            try { await getBoardHubConnection().invoke('JoinSprintBoard', sprintId); } catch { /* ignore */ }
             setSprintWorkItemsLoadingBySprint((prev) => ({ ...prev, [sprintId]: true }));
             try {
                 const items = await getSprintWorkItems(sprintId);
                 setSprintWorkItemsBySprint((prev) => ({ ...prev, [sprintId]: items }));
             } catch (err) {
-                showStatus({
-                    kind: 'error',
-                    message: err instanceof ApiError ? err.message : 'Failed to load sprint work items.',
-                });
+                showStatus({ kind: 'error', message: err instanceof ApiError ? err.message : 'Failed to load sprint work items.' });
             } finally {
-            setSprintWorkItemsLoadingBySprint((prev) => ({ ...prev, [sprintId]: false }));
+                setSprintWorkItemsLoadingBySprint((prev) => ({ ...prev, [sprintId]: false }));
             }
         },
         [expandedSprintIds, showStatus],
@@ -373,13 +366,9 @@ export default function BacklogsPage() {
                 await assignToSprint(workItemId, sprintId);
                 showStatus({ kind: 'success', message: 'Work item assigned to sprint.' });
                 await loadBacklog();
-                if (expandedSprintIds.has(sprintId)) {
-                    await refreshExpandedSprints([sprintId]);
-                }
-                // SignalR will update other clients.
+                if (expandedSprintIds.has(sprintId)) await refreshExpandedSprints([sprintId]);
             } catch (err) {
-                const msg = err instanceof Error ? err.message : 'Failed to assign work item.';
-                showStatus({ kind: 'error', message: msg });
+                showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to assign work item.' });
             }
         },
         [expandedSprintIds, loadBacklog, refreshExpandedSprints, showStatus],
@@ -393,19 +382,16 @@ export default function BacklogsPage() {
                 await loadBacklog();
                 await refreshExpandedSprints();
             } catch (err) {
-                const msg = err instanceof Error ? err.message : 'Failed to remove from sprint.';
-                showStatus({ kind: 'error', message: msg });
+                showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to remove from sprint.' });
             }
         },
         [loadBacklog, refreshExpandedSprints, showStatus],
     );
 
-    // Manage sprint modal (minimal).
     const [manageOpen, setManageOpen] = useState(false);
     const [manageSprintId, setManageSprintId] = useState<number | null>(null);
     const [manageLoading, setManageLoading] = useState(false);
     const [manageError, setManageError] = useState('');
-
     const [manageSprintName, setManageSprintName] = useState('');
     const [manageGoal, setManageGoal] = useState('');
     const [manageStartDate, setManageStartDate] = useState('');
@@ -413,7 +399,6 @@ export default function BacklogsPage() {
     const [manageManagedBy, setManageManagedBy] = useState<number | null>(null);
     const [manageTeamId, setManageTeamId] = useState<number | null>(null);
 
-    // Assignee picker (for sprint work items).
     const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
     const [assigneeTargetWorkItemId, setAssigneeTargetWorkItemId] = useState<number | null>(null);
     const [assigneeSearch, setAssigneeSearch] = useState('');
@@ -512,8 +497,7 @@ export default function BacklogsPage() {
             await loadSprints();
             resetManage();
         } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Failed to update sprint.';
-            setManageError(msg);
+            setManageError(err instanceof Error ? err.message : 'Failed to update sprint.');
         } finally {
             setManageLoading(false);
         }
@@ -529,8 +513,7 @@ export default function BacklogsPage() {
             await loadSprints();
             await refreshExpandedSprints();
         } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Sprint action failed.';
-            showStatus({ kind: 'error', message: msg });
+            showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Sprint action failed.' });
         }
     };
 
@@ -541,15 +524,18 @@ export default function BacklogsPage() {
             await loadSprints();
             await refreshExpandedSprints();
         } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Failed to delete sprint.';
-            showStatus({ kind: 'error', message: msg });
+            showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to delete sprint.' });
         }
     };
 
+    // ─────────────────────────────────────────────
+    // RENDER
+    // ─────────────────────────────────────────────
     return (
         <div className="backlogs-page">
+            {/* Toast banner — floats above, does not push layout */}
             {status.kind !== 'none' ? (
-                <div style={{ marginBottom: 8 }}>
+                <div className="backlogs-status-banner">
                     <StatusBanner
                         variant={status.kind === 'error' ? 'error' : 'success'}
                         message={status.message}
@@ -557,9 +543,12 @@ export default function BacklogsPage() {
                 </div>
             ) : null}
 
+            {/* Three-column workspace — fills remaining height, no page scroll */}
             <div className="backlogs-workspace">
-                {/* ── EPICS ───────────────────────────────────── */}
-                <section className="backlogs-left panel">
+
+                {/* ── EPICS (left column) ─────────────────── */}
+                <section className="backlogs-col panel">
+                    {/* Sticky header — never scrolls away */}
                     <div className="panel-header">
                         <div className="panel-title-row">
                             <div>
@@ -620,6 +609,7 @@ export default function BacklogsPage() {
                         </div>
                     </div>
 
+                    {/* Scrollable body */}
                     <div className="panel-body">
                         {epicsError ? (
                             <div className="form-error" style={{ marginBottom: 12 }}>{epicsError}</div>
@@ -668,10 +658,11 @@ export default function BacklogsPage() {
                     </div>
                 </section>
 
-                {/* ── RIGHT STACK ───────────────────────────── */}
-                <div className="backlogs-right" style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+                {/* ── RIGHT STACK (sprints + backlog, each independently scrollable) ── */}
+                <div className="backlogs-right">
+
                     {/* ── SPRINTS ─────────────────────────────── */}
-                    <section className="panel" style={{ flex: 1, minHeight: 0 }}>
+                    <section className="backlogs-col panel">
                         <div className="panel-header">
                             <div className="panel-title-row">
                                 <div>
@@ -714,12 +705,12 @@ export default function BacklogsPage() {
                                         onChange={(e) =>
                                             setSprintSortBy(
                                                 e.target.value as
-                                                    | 'SprintName'
-                                                    | 'StartDate'
-                                                    | 'EndDate'
-                                                    | 'Status'
-                                                    | 'CreatedAt'
-                                                    | 'UpdatedAt'
+                                                | 'SprintName'
+                                                | 'StartDate'
+                                                | 'EndDate'
+                                                | 'Status'
+                                                | 'CreatedAt'
+                                                | 'UpdatedAt'
                                             )
                                         }
                                     >
@@ -812,12 +803,10 @@ export default function BacklogsPage() {
                                                         {s.status}
                                                     </span>
                                                     <span className="badge-muted">
-                                                        {sprintWorkItemsBySprint[s.sprintID]?.filter((w) => w.typeName === STORY_TYPE).length ??
-                                                            0}
+                                                        {sprintWorkItemsBySprint[s.sprintID]?.filter((w) => w.typeName === STORY_TYPE).length ?? 0}
                                                     </span>
                                                     <span className="badge-muted">
-                                                        {sprintWorkItemsBySprint[s.sprintID]?.filter((w) => w.typeName === TASK_TYPE).length ??
-                                                            0}
+                                                        {sprintWorkItemsBySprint[s.sprintID]?.filter((w) => w.typeName === TASK_TYPE).length ?? 0}
                                                     </span>
                                                     <span className="badge-muted">
                                                         {durationDays !== null
@@ -878,7 +867,6 @@ export default function BacklogsPage() {
                                                                             <span>Stop</span>
                                                                             <span aria-hidden="true">→</span>
                                                                         </button>
-
                                                                         <button
                                                                             className="menu-item"
                                                                             type="button"
@@ -928,7 +916,6 @@ export default function BacklogsPage() {
                                                     <div>Manager: {s.managedBy ?? '—'}</div>
                                                 </div>
 
-                                                {/* Expanded contents */}
                                                 {expanded ? (
                                                     <div style={{ marginTop: 12 }}>
                                                         {sprintWorkItemsLoadingBySprint[s.sprintID] ? (
@@ -972,17 +959,13 @@ export default function BacklogsPage() {
                                                                             </button>
                                                                         </>
                                                                     ) : null}
-
                                                                     <button
                                                                         type="button"
                                                                         className="btn-ghost"
-                                                                        onClick={() => {
-                                                                            void openManageFor(s);
-                                                                        }}
+                                                                        onClick={() => { void openManageFor(s); }}
                                                                     >
                                                                         Manage Sprint
                                                                     </button>
-
                                                                     <button
                                                                         type="button"
                                                                         className="btn-ghost"
@@ -993,7 +976,6 @@ export default function BacklogsPage() {
                                                                     </button>
                                                                 </>
                                                             ) : null}
-
                                                             {!canManage ? (
                                                                 <div className="panel-subtle">You can view, but actions are restricted by role.</div>
                                                             ) : null}
@@ -1008,8 +990,8 @@ export default function BacklogsPage() {
                         </div>
                     </section>
 
-                    {/* ── BACKLOG ───────────────────────────── */}
-                    <section className="panel" style={{ flex: 1, minHeight: 0 }}>
+                    {/* ── BACKLOG ──────────────────────────────── */}
+                    <section className="backlogs-col panel">
                         <div className="panel-header">
                             <div className="panel-title-row">
                                 <div>
@@ -1029,7 +1011,6 @@ export default function BacklogsPage() {
                                         placeholder="Title…"
                                     />
                                 </div>
-
                                 <div className="control">
                                     <label htmlFor="bl-type">Type</label>
                                     <select
@@ -1043,7 +1024,6 @@ export default function BacklogsPage() {
                                         <option value="Task">Tasks</option>
                                     </select>
                                 </div>
-
                                 <div className="control">
                                     <label htmlFor="bl-priority">Priority</label>
                                     <select
@@ -1059,7 +1039,6 @@ export default function BacklogsPage() {
                                         <option value="Critical">Critical</option>
                                     </select>
                                 </div>
-
                                 <div className="control">
                                     <label htmlFor="bl-assignee">Assignee</label>
                                     <select
@@ -1072,7 +1051,6 @@ export default function BacklogsPage() {
                                         <option value="Me">Me</option>
                                     </select>
                                 </div>
-
                                 <div className="control">
                                     <label htmlFor="bl-sortby">Sort</label>
                                     <select
@@ -1087,7 +1065,6 @@ export default function BacklogsPage() {
                                         <option value="Status">Status</option>
                                     </select>
                                 </div>
-
                                 <div className="control">
                                     <label htmlFor="bl-dir">Direction</label>
                                     <select
@@ -1114,7 +1091,7 @@ export default function BacklogsPage() {
                                         <div className="loading-skel" key={i} style={{ marginBottom: 14 }} />
                                     ))}
                                 </div>
-                            ) : stories.length === 0 ? (
+                            ) : !hasBacklogRows ? (
                                 <div className="scroll-empty">No backlog items found.</div>
                             ) : (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1129,9 +1106,7 @@ export default function BacklogsPage() {
                                         return (
                                             <div key={story.workItemID} className="work-item-row">
                                                 <div className="work-item-grid">
-                                                    <div className="work-item-title">
-                                                        {story.title}
-                                                    </div>
+                                                    <div className="work-item-title">{story.title}</div>
                                                     <div className="badge-muted">{story.typeName}</div>
                                                     <div className="badge-muted">{story.priority ?? '—'}</div>
                                                     <div className="badge-muted" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -1156,9 +1131,7 @@ export default function BacklogsPage() {
                                                         {tasks.map((t) => (
                                                             <div key={t.workItemID} style={{ marginTop: 10 }} className="work-item-row">
                                                                 <div className="work-item-grid">
-                                                                    <div className="work-item-title">
-                                                                        {t.title}
-                                                                    </div>
+                                                                    <div className="work-item-title">{t.title}</div>
                                                                     <div className="badge-muted">{t.typeName}</div>
                                                                     <div className="badge-muted">{t.priority ?? '—'}</div>
                                                                     <div className="badge-muted" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -1184,111 +1157,86 @@ export default function BacklogsPage() {
                                             </div>
                                         );
                                     })}
+                                    {orphanTasks.map((t) => (
+                                        <div key={t.workItemID} className="work-item-row">
+                                            <div className="work-item-grid">
+                                                <div className="work-item-title">{t.title}</div>
+                                                <div className="badge-muted">{t.typeName}</div>
+                                                <div className="badge-muted">{t.priority ?? '—'}</div>
+                                                <div className="badge-muted" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                                                    <span>{t.status}</span>
+                                                    <span
+                                                        draggable
+                                                        className="badge-muted"
+                                                        onDragStart={(e) => {
+                                                            e.dataTransfer.setData('text/plain', String(t.workItemID));
+                                                            e.dataTransfer.effectAllowed = 'move';
+                                                        }}
+                                                        onDragEnd={() => setDragOverSprintId(null)}
+                                                        style={{ cursor: 'grab' }}
+                                                    >
+                                                        Drag
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             )}
                         </div>
                     </section>
-                </div>
-            </div>
 
-            {/* Manage modal */}
+                </div>{/* end backlogs-right */}
+            </div>{/* end backlogs-workspace */}
+
+            {/* ── MODALS ─────────────────────────────────────────── */}
+
             {manageOpen && manageSprintId !== null ? (
                 <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Manage sprint">
                     <div className="modal-surface">
                         <div className="modal-header">
                             <div className="modal-title">Manage Sprint</div>
-                            <button type="button" className="modal-close" onClick={resetManage} aria-label="Close">
-                                ×
-                            </button>
+                            <button type="button" className="modal-close" onClick={resetManage} aria-label="Close">×</button>
                         </div>
                         <div className="modal-body">
-                            {manageError ? (
-                                <div className="form-error" style={{ marginBottom: 10 }}>
-                                    {manageError}
-                                </div>
-                            ) : null}
-
+                            {manageError ? <div className="form-error" style={{ marginBottom: 10 }}>{manageError}</div> : null}
                             <div className="modal-grid">
                                 <div className="control" style={{ gridColumn: '1 / -1' }}>
                                     <label htmlFor="ms-name">Sprint name</label>
-                                    <input
-                                        id="ms-name"
-                                        className="input"
-                                        value={manageSprintName}
-                                        onChange={(e) => setManageSprintName(e.target.value)}
-                                        disabled={manageLoading}
-                                    />
+                                    <input id="ms-name" className="input" value={manageSprintName} onChange={(e) => setManageSprintName(e.target.value)} disabled={manageLoading} />
                                 </div>
                                 <div className="control" style={{ gridColumn: '1 / -1' }}>
                                     <label htmlFor="ms-goal">Goal</label>
-                                    <textarea
-                                        id="ms-goal"
-                                        className="input"
-                                        value={manageGoal}
-                                        onChange={(e) => setManageGoal(e.target.value)}
-                                        disabled={manageLoading}
-                                        rows={3}
-                                    />
+                                    <textarea id="ms-goal" className="input" value={manageGoal} onChange={(e) => setManageGoal(e.target.value)} disabled={manageLoading} rows={3} />
                                 </div>
                                 <div className="control">
                                     <label htmlFor="ms-start">Start date</label>
-                                    <input
-                                        id="ms-start"
-                                        className="input"
-                                        type="date"
-                                        value={manageStartDate}
-                                        onChange={(e) => setManageStartDate(e.target.value)}
-                                        disabled={manageLoading}
-                                    />
+                                    <input id="ms-start" className="input" type="date" value={manageStartDate} onChange={(e) => setManageStartDate(e.target.value)} disabled={manageLoading} />
                                 </div>
                                 <div className="control">
                                     <label htmlFor="ms-end">End date</label>
-                                    <input
-                                        id="ms-end"
-                                        className="input"
-                                        type="date"
-                                        value={manageEndDate}
-                                        onChange={(e) => setManageEndDate(e.target.value)}
-                                        disabled={manageLoading}
-                                    />
+                                    <input id="ms-end" className="input" type="date" value={manageEndDate} onChange={(e) => setManageEndDate(e.target.value)} disabled={manageLoading} />
                                 </div>
                                 <div className="control">
                                     <label htmlFor="ms-managedby">Managed by (userID)</label>
-                                    <input
-                                        id="ms-managedby"
-                                        className="input"
-                                        value={manageManagedBy ?? ''}
-                                        onChange={(e) => setManageManagedBy(e.target.value ? Number(e.target.value) : null)}
-                                        disabled={manageLoading || !(me && isElevatedRole(me.roleName))}
-                                    />
+                                    <input id="ms-managedby" className="input" value={manageManagedBy ?? ''} onChange={(e) => setManageManagedBy(e.target.value ? Number(e.target.value) : null)} disabled={manageLoading || !(me && isElevatedWorkspaceRole(me))} />
                                 </div>
                                 <div className="control">
                                     <label htmlFor="ms-team">Team ID</label>
-                                    <input
-                                        id="ms-team"
-                                        className="input"
-                                        value={manageTeamId ?? ''}
-                                        onChange={(e) => setManageTeamId(e.target.value ? Number(e.target.value) : null)}
-                                        disabled={manageLoading}
-                                    />
+                                    <input id="ms-team" className="input" value={manageTeamId ?? ''} onChange={(e) => setManageTeamId(e.target.value ? Number(e.target.value) : null)} disabled={manageLoading} />
                                 </div>
                             </div>
                         </div>
                         <div className="modal-footer">
                             <div className="modal-actions-row">
-                                <button type="button" className="btn-ghost" onClick={resetManage} disabled={manageLoading}>
-                                    Cancel
-                                </button>
-                                <button type="button" className="btn-primary" onClick={() => void saveManage()} disabled={manageLoading}>
-                                    {manageLoading ? 'Saving…' : 'Save'}
-                                </button>
+                                <button type="button" className="btn-ghost" onClick={resetManage} disabled={manageLoading}>Cancel</button>
+                                <button type="button" className="btn-primary" onClick={() => void saveManage()} disabled={manageLoading}>{manageLoading ? 'Saving…' : 'Save'}</button>
                             </div>
                         </div>
                     </div>
                 </div>
             ) : null}
 
-            {/* Assignee picker modal */}
             {assigneePickerOpen && assigneeTargetWorkItemId !== null ? (
                 <div
                     className="modal-overlay"
@@ -1305,55 +1253,22 @@ export default function BacklogsPage() {
                     <div className="modal-surface">
                         <div className="modal-header">
                             <div className="modal-title">Add assignee</div>
-                            <button
-                                type="button"
-                                className="modal-close"
-                                onClick={() => {
-                                    setAssigneePickerOpen(false);
-                                    setAssigneeTargetWorkItemId(null);
-                                }}
-                                aria-label="Close"
-                            >
-                                ×
-                            </button>
+                            <button type="button" className="modal-close" onClick={() => { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); }} aria-label="Close">×</button>
                         </div>
-
                         <div className="modal-body">
-                            {assigneeError ? (
-                                <div className="form-error" style={{ marginBottom: 10 }}>
-                                    {assigneeError}
-                                </div>
-                            ) : null}
-
+                            {assigneeError ? <div className="form-error" style={{ marginBottom: 10 }}>{assigneeError}</div> : null}
                             <div className="control" style={{ marginBottom: 10 }}>
                                 <label htmlFor="assignee-search">Search users</label>
-                                <input
-                                    id="assignee-search"
-                                    className="input"
-                                    value={assigneeSearch}
-                                    onChange={(e) => setAssigneeSearch(e.target.value)}
-                                    placeholder="Name or email…"
-                                    disabled={assigneeLoading}
-                                />
+                                <input id="assignee-search" className="input" value={assigneeSearch} onChange={(e) => setAssigneeSearch(e.target.value)} placeholder="Name or email…" disabled={assigneeLoading} />
                             </div>
-
                             {assigneeLoading ? (
-                                <div>
-                                    {Array.from({ length: 6 }).map((_, i) => (
-                                        <div className="loading-skel" key={i} style={{ marginBottom: 12 }} />
-                                    ))}
-                                </div>
+                                <div>{Array.from({ length: 6 }).map((_, i) => <div className="loading-skel" key={i} style={{ marginBottom: 12 }} />)}</div>
                             ) : assigneeUsers.length === 0 ? (
                                 <div className="scroll-empty">No users found.</div>
                             ) : (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                     {assigneeUsers.map((u) => (
-                                        <button
-                                            key={u.userID}
-                                            type="button"
-                                            className="menu-item"
-                                            onClick={() => void selectAssignee(u.userID)}
-                                        >
+                                        <button key={u.userID} type="button" className="menu-item" onClick={() => void selectAssignee(u.userID)}>
                                             <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                                                 <span style={{ fontWeight: 900 }}>{u.displayName}</span>
                                                 <span style={{ fontSize: 12, color: 'var(--form-text-muted)' }}>{u.emailAddress}</span>
@@ -1364,20 +1279,9 @@ export default function BacklogsPage() {
                                 </div>
                             )}
                         </div>
-
                         <div className="modal-footer">
                             <div className="modal-actions-row">
-                                <button
-                                    type="button"
-                                    className="btn-ghost"
-                                    onClick={() => {
-                                        setAssigneePickerOpen(false);
-                                        setAssigneeTargetWorkItemId(null);
-                                    }}
-                                    disabled={assigneeLoading}
-                                >
-                                    Close
-                                </button>
+                                <button type="button" className="btn-ghost" onClick={() => { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); }} disabled={assigneeLoading}>Close</button>
                             </div>
                         </div>
                     </div>
@@ -1396,20 +1300,27 @@ function SprintWorkItemsList(props: {
 }) {
     const { sprintWorkItems, onRemoveFromSprint, canManage, onAssignAssignee } = props;
 
-    const stories = sprintWorkItems.filter((w) => w.typeName === STORY_TYPE);
+    const stories = sprintWorkItems.filter((w) => normTypeName(w) === STORY_TYPE.toLowerCase());
+    const storyIdSet = new Set(stories.map((s) => s.workItemID));
     const tasksByParentStoryId = new Map<number, AgendaWorkItem[]>();
     for (const w of sprintWorkItems) {
-        if (w.typeName !== TASK_TYPE) continue;
+        if (normTypeName(w) !== TASK_TYPE.toLowerCase()) continue;
         const parent = w.parentWorkItemID;
-        if (!parent) continue;
+        if (parent == null) continue;
         const arr = tasksByParentStoryId.get(parent) ?? [];
         arr.push(w);
         tasksByParentStoryId.set(parent, arr);
     }
+    const orphanTasks = sprintWorkItems.filter(
+        (w) =>
+            normTypeName(w) === TASK_TYPE.toLowerCase() &&
+            (w.parentWorkItemID == null || !storyIdSet.has(w.parentWorkItemID)),
+    );
+    const hasRows = stories.length > 0 || orphanTasks.length > 0;
 
     return (
         <div>
-            {stories.length === 0 ? (
+            {!hasRows ? (
                 <div className="scroll-empty">No work items assigned to this sprint.</div>
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1429,31 +1340,11 @@ function SprintWorkItemsList(props: {
                                     {canManage ? (
                                         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                                             {story.assignedUserID ? (
-                                                <button
-                                                    type="button"
-                                                    className="btn-ghost"
-                                                    disabled
-                                                    title="Backend does not support unassigning an assignee via this API."
-                                                >
-                                                    Remove assignee
-                                                </button>
+                                                <button type="button" className="btn-ghost" disabled title="Backend does not support unassigning an assignee via this API.">Remove assignee</button>
                                             ) : (
-                                                <button
-                                                    type="button"
-                                                    className="btn-ghost"
-                                                    onClick={() => onAssignAssignee(story.workItemID)}
-                                                >
-                                                    Add assignee
-                                                </button>
+                                                <button type="button" className="btn-ghost" onClick={() => onAssignAssignee(story.workItemID)}>Add assignee</button>
                                             )}
-
-                                            <button
-                                                type="button"
-                                                className="btn-ghost"
-                                                onClick={() => onRemoveFromSprint(story.workItemID)}
-                                            >
-                                                Remove
-                                            </button>
+                                            <button type="button" className="btn-ghost" onClick={() => onRemoveFromSprint(story.workItemID)}>Remove</button>
                                         </div>
                                     ) : null}
                                 </div>
@@ -1471,29 +1362,16 @@ function SprintWorkItemsList(props: {
                                                             <span className="badge-muted">Assignee: {t.assignedUserID ?? '—'}</span>
                                                         </div>
                                                     </div>
-                                                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                        {canManage ? (
-                                                            <>
-                                                                {t.assignedUserID ? (
-                                                                    <button
-                                                                        type="button"
-                                                                        className="btn-ghost"
-                                                                        disabled
-                                                                        title="Backend does not support unassigning an assignee via this API."
-                                                                    >
-                                                                        Remove assignee
-                                                                    </button>
-                                                                ) : (
-                                                                    <button type="button" className="btn-ghost" onClick={() => onAssignAssignee(t.workItemID)}>
-                                                                        Add assignee
-                                                                    </button>
-                                                                )}
-                                                                <button type="button" className="btn-ghost" onClick={() => onRemoveFromSprint(t.workItemID)}>
-                                                                    Remove
-                                                                </button>
-                                                            </>
-                                                        ) : null}
-                                                    </div>
+                                                    {canManage ? (
+                                                        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                            {t.assignedUserID ? (
+                                                                <button type="button" className="btn-ghost" disabled title="Backend does not support unassigning an assignee via this API.">Remove assignee</button>
+                                                            ) : (
+                                                                <button type="button" className="btn-ghost" onClick={() => onAssignAssignee(t.workItemID)}>Add assignee</button>
+                                                            )}
+                                                            <button type="button" className="btn-ghost" onClick={() => onRemoveFromSprint(t.workItemID)}>Remove</button>
+                                                        </div>
+                                                    ) : null}
                                                 </div>
                                             </div>
                                         ))}
@@ -1502,6 +1380,30 @@ function SprintWorkItemsList(props: {
                             </div>
                         );
                     })}
+                    {orphanTasks.map((t) => (
+                        <div key={t.workItemID} className="work-item-row">
+                            <div className="work-item-top">
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    <div className="work-item-title">{t.title}</div>
+                                    <div className="work-item-line">
+                                        <span className="badge-muted">{t.typeName}</span>
+                                        <span className="badge-muted">Priority: {t.priority ?? '—'}</span>
+                                        <span className="badge-muted">Assignee: {t.assignedUserID ?? '—'}</span>
+                                    </div>
+                                </div>
+                                {canManage ? (
+                                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                        {t.assignedUserID ? (
+                                            <button type="button" className="btn-ghost" disabled title="Backend does not support unassigning an assignee via this API.">Remove assignee</button>
+                                        ) : (
+                                            <button type="button" className="btn-ghost" onClick={() => onAssignAssignee(t.workItemID)}>Add assignee</button>
+                                        )}
+                                        <button type="button" className="btn-ghost" onClick={() => onRemoveFromSprint(t.workItemID)}>Remove</button>
+                                    </div>
+                                ) : null}
+                            </div>
+                        </div>
+                    ))}
                 </div>
             )}
         </div>

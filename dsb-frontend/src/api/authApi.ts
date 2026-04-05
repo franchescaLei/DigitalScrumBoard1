@@ -1,4 +1,5 @@
-﻿import apiClient from '../services/apiClient';
+import apiClient from '../services/apiClient';
+import { normalizeUserProfile } from '../utils/userProfile';
 import type {
     LoginRequest,
     LoginResponse,
@@ -15,17 +16,28 @@ interface MessageResponse {
 
 // ── Session ───────────────────────────────────
 
-/** POST /api/auth/login — returns login result with flags */
-export const login = (data: LoginRequest): Promise<LoginResponse> =>
-    apiClient.post<LoginResponse>('/api/auth/login', data);
-
 /** POST /api/auth/logout — clears auth cookie */
 export const logout = (): Promise<void> =>
     apiClient.post<void>('/api/auth/logout');
 
 /** GET /api/auth/me — fetch current user from cookie session */
-export const getCurrentUser = (): Promise<UserProfile> =>
-    apiClient.get<UserProfile>('/api/auth/me');
+export const getCurrentUser = async (): Promise<UserProfile> => {
+    const raw = await apiClient.get<Record<string, unknown>>('/api/auth/me');
+    return normalizeUserProfile(raw);
+};
+
+/** POST /api/auth/login — returns login result with flags */
+export const login = async (data: LoginRequest): Promise<LoginResponse> => {
+    const raw = await apiClient.post<Record<string, unknown>>('/api/auth/login', data);
+    const userRaw = raw.user ?? raw.User;
+    const user = normalizeUserProfile((userRaw as Record<string, unknown>) ?? {});
+    return {
+        message: String(raw.message ?? raw.Message ?? ''),
+        mustChangePassword: Boolean(raw.mustChangePassword ?? raw.MustChangePassword),
+        emailVerified: Boolean(raw.emailVerified ?? raw.EmailVerified),
+        user,
+    };
+};
 
 // ── Password change (forced flow) ─────────────
 

@@ -54,7 +54,7 @@ namespace DigitalScrumBoard1.Services
                 ipAddress,
                 ct);
 
-            await _hub.Clients.Group("admins").SendAsync("AdminDirectoryChanged", new { reason = "teams" }, ct);
+            await _hub.Clients.All.SendAsync("AdminDirectoryChanged", new { reason = "teams" }, ct);
 
             return new
             {

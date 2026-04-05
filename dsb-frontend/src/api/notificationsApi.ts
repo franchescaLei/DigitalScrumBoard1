@@ -4,6 +4,13 @@ import type {
   UnreadNotificationCount,
 } from "../types/notification";
 
+/** Fired so the header (and similar) can refetch unread count after server-side notification changes. */
+export const NOTIFICATIONS_CHANGED_EVENT = "dsb-notifications-changed";
+
+export function notifyNotificationsMayHaveChanged(): void {
+  window.dispatchEvent(new CustomEvent(NOTIFICATIONS_CHANGED_EVENT));
+}
+
 export async function getUnreadNotificationCount(): Promise<UnreadNotificationCount> {
   return apiClient.get<UnreadNotificationCount>("/api/notifications/unread-count");
 }
