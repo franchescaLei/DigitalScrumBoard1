@@ -19,7 +19,10 @@ public sealed class NotificationHub : Hub
             // Add user to their personal notification group
             await Groups.AddToGroupAsync(Context.ConnectionId, $"user-{userId.Value}");
         }
-        
+
+        if (Context.User?.IsInRole("Administrator") == true)
+            await Groups.AddToGroupAsync(Context.ConnectionId, "admins");
+
         await base.OnConnectedAsync();
     }
 

@@ -1,9 +1,11 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
 using DigitalScrumBoard1.DTOs.Authentication;
+using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace DigitalScrumBoard1.Services
@@ -13,6 +15,8 @@ namespace DigitalScrumBoard1.Services
         private readonly DigitalScrumBoardContext _db;
         private readonly IAuthEmailService _authEmail;
         private readonly IAuditService _audit;
+        private readonly INotificationService _notifications;
+        private readonly IHubContext<NotificationHub> _hub;
 
         private const int RateLimitStartsAtFailedAttempt = 5;
         private const int AccountLockoutFailedAttempt = 8;
@@ -23,11 +27,15 @@ namespace DigitalScrumBoard1.Services
         public UserManagementService(
             DigitalScrumBoardContext db,
             IAuthEmailService authEmail,
-            IAuditService audit)
+            IAuditService audit,
+            INotificationService notifications,
+            IHubContext<NotificationHub> hub)
         {
             _db = db;
             _authEmail = authEmail;
             _audit = audit;
+            _notifications = notifications;
+            _hub = hub;
         }
 
         public async Task<object> ListUsersAsync(
@@ -301,6 +309,8 @@ namespace DigitalScrumBoard1.Services
                 ipAddress,
                 ct);
 
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
+
             return new
             {
                 user.UserID,
@@ -349,6 +359,8 @@ namespace DigitalScrumBoard1.Services
                 ipAddress,
                 ct);
 
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
+
             return "User account disabled successfully.";
         }
 
@@ -377,6 +389,8 @@ namespace DigitalScrumBoard1.Services
                 ipAddress,
                 ct);
 
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
+
             return "User account enabled successfully.";
         }
 
@@ -385,11 +399,15 @@ namespace DigitalScrumBoard1.Services
             if (req is null)
                 throw new InvalidOperationException("Request body is required.");
 
+            var removeFromTeam = req.RemoveFromTeam == true;
             var hasRole = req.RoleID.HasValue;
-            var hasTeam = req.TeamID.HasValue;
+            var hasTeamAssign = req.TeamID.HasValue && !removeFromTeam;
 
-            if (!hasRole && !hasTeam)
-                throw new InvalidOperationException("At least one of RoleID or TeamID must be provided.");
+            if (removeFromTeam && req.TeamID.HasValue)
+                throw new InvalidOperationException("Cannot remove from team and assign TeamID in the same request.");
+
+            if (!hasRole && !hasTeamAssign && !removeFromTeam)
+                throw new InvalidOperationException("At least one of RoleID, TeamID, or RemoveFromTeam must be provided.");
 
             var user = await _db.Users
                 .Include(u => u.Role)
@@ -420,7 +438,7 @@ namespace DigitalScrumBoard1.Services
                     throw new InvalidOperationException("Invalid RoleID.");
             }
 
-            if (hasTeam)
+            if (hasTeamAssign)
             {
                 newTeam = await _db.Teams
                     .AsNoTracking()
@@ -440,11 +458,20 @@ namespace DigitalScrumBoard1.Services
                 notificationParts.Add($"your role was changed from '{oldRoleName ?? "Unknown"}' to '{newRole?.RoleName ?? "Unknown"}'");
             }
 
-            if (hasTeam && user.TeamID != req.TeamID!.Value)
+            if (hasTeamAssign && user.TeamID != req.TeamID!.Value)
             {
                 user.TeamID = req.TeamID.Value;
                 changes.Add($"TeamID:{oldTeamId}->{req.TeamID.Value}");
                 notificationParts.Add($"your team was changed from '{oldTeamName ?? "None"}' to '{newTeam?.TeamName ?? "None"}'");
+            }
+
+            if (removeFromTeam && user.TeamID.HasValue)
+            {
+                var prev = oldTeamName ?? "Unknown";
+                user.TeamID = null;
+                user.Team = null;
+                changes.Add($"TeamID:{oldTeamId}->null");
+                notificationParts.Add($"you were removed from team '{prev}'");
             }
 
             if (changes.Count == 0)
@@ -463,22 +490,38 @@ namespace DigitalScrumBoard1.Services
 
             user.UpdatedAt = DateTime.UtcNow;
 
-            if (user.UserID != actorUserId)
-            {
-                _db.Notifications.Add(new Notification
-                {
-                    UserID = user.UserID,
-                    NotificationType = "UserAccessUpdated",
-                    Message = $"{string.Join(" and ", notificationParts)}.",
-                    CreatedAt = DateTime.UtcNow,
-                    IsRead = false
-                });
-            }
-
             await _db.SaveChangesAsync(ct);
 
-            var effectiveRoleName = newRole?.RoleName ?? oldRoleName ?? string.Empty;
-            var effectiveTeamName = newTeam?.TeamName ?? oldTeamName;
+            if (user.UserID != actorUserId && notificationParts.Count > 0)
+            {
+                await _notifications.AddNotificationsAsync(
+                    new[]
+                    {
+                        new Notification
+                        {
+                            UserID = user.UserID,
+                            NotificationType = "UserAccessUpdated",
+                            Message = $"{string.Join(" and ", notificationParts)}.",
+                            CreatedAt = DateTime.UtcNow,
+                            IsRead = false
+                        }
+                    },
+                    ct);
+            }
+
+            var effectiveRoleName = await _db.Roles.AsNoTracking()
+                .Where(r => r.RoleID == user.RoleID)
+                .Select(r => r.RoleName)
+                .FirstAsync(ct);
+
+            string? effectiveTeamName = null;
+            if (user.TeamID.HasValue)
+            {
+                effectiveTeamName = await _db.Teams.AsNoTracking()
+                    .Where(t => t.TeamID == user.TeamID.Value)
+                    .Select(t => t.TeamName)
+                    .FirstOrDefaultAsync(ct);
+            }
 
             await _audit.LogAsync(
                 actorUserId,
@@ -489,6 +532,8 @@ namespace DigitalScrumBoard1.Services
                 $"Updated access for {user.EmailAddress}; {string.Join("; ", changes)}",
                 ipAddress,
                 ct);
+
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
 
             return new
             {
@@ -529,8 +574,45 @@ namespace DigitalScrumBoard1.Services
                 ipAddress,
                 ct);
 
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
+
             return temporaryPassword;
         }
+
+        public async Task<string> ForceAccountLockoutAsync(int id, int actorUserId, string ipAddress, CancellationToken ct)
+        {
+            var user = await _db.Users.SingleOrDefaultAsync(u => u.UserID == id, ct);
+            if (user is null)
+                return "User not found.";
+
+            if (user.UserID == actorUserId)
+                return "You cannot lock your own account.";
+
+            if (user.Disabled)
+                return "Account is disabled; login lockout does not apply.";
+
+            for (var i = 0; i < AccountLockoutFailedAttempt; i++)
+            {
+                await _audit.LogAsync(id, "LOGIN", "User", id, false, "Invalid credentials.", ipAddress, ct);
+            }
+
+            await _audit.LogAsync(
+                actorUserId,
+                "ADMIN_FORCE_LOCKOUT",
+                "User",
+                id,
+                true,
+                $"Admin forced login lockout for {user.EmailAddress}.",
+                ipAddress,
+                ct);
+
+            await NotifyAdminsDirectoryChangedAsync("users", ct);
+
+            return "Account lockout applied.";
+        }
+
+        private Task NotifyAdminsDirectoryChangedAsync(string reason, CancellationToken ct)
+            => _hub.Clients.Group("admins").SendAsync("AdminDirectoryChanged", new { reason }, ct);
 
         private static List<UserAdminRow> ApplyUserSorting(
             List<UserAdminRow> rows,

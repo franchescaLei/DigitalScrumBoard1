@@ -1,4 +1,4 @@
-﻿using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.Dtos;
 using DigitalScrumBoard1.DTOs.Authentication;
 using DigitalScrumBoard1.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -200,6 +200,26 @@ namespace DigitalScrumBoard1.Controllers
                 ct);
 
             return Ok(new { message = "Password reset email sent." });
+        }
+
+        [HttpPost("{id:int}/force-lockout")]
+        public async Task<IActionResult> ForceLockout([FromRoute] int id, CancellationToken ct)
+        {
+            var actorId = GetActorUserId() ?? 0;
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+            var msg = await _users.ForceAccountLockoutAsync(id, actorId, ip, ct);
+
+            if (msg == "User not found.")
+                return NotFound(new { message = msg });
+
+            if (msg == "You cannot lock your own account.")
+                return BadRequest(new { message = msg });
+
+            if (msg.StartsWith("Account is disabled", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = msg });
+
+            return Ok(new { message = msg });
         }
 
         private int? GetActorUserId()

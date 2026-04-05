@@ -1,4 +1,4 @@
-﻿using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.Dtos;
 using DigitalScrumBoard1.DTOs.Authentication;
 
 namespace DigitalScrumBoard1.Services
@@ -31,5 +31,7 @@ namespace DigitalScrumBoard1.Services
         Task<object> UpdateAccessAsync(int id, UpdateUserAccessDto req, int actorUserId, string ipAddress, CancellationToken ct);
 
         Task<string> ResetUserPasswordAsync(int id, int actorUserId, string ipAddress, CancellationToken ct);
+
+        Task<string> ForceAccountLockoutAsync(int id, int actorUserId, string ipAddress, CancellationToken ct);
     }
 }

@@ -1,6 +1,8 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
+using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace DigitalScrumBoard1.Services
@@ -9,11 +11,13 @@ namespace DigitalScrumBoard1.Services
     {
         private readonly DigitalScrumBoardContext _db;
         private readonly IAuditService _audit;
+        private readonly IHubContext<NotificationHub> _hub;
 
-        public TeamService(DigitalScrumBoardContext db, IAuditService audit)
+        public TeamService(DigitalScrumBoardContext db, IAuditService audit, IHubContext<NotificationHub> hub)
         {
             _db = db;
             _audit = audit;
+            _hub = hub;
         }
 
         public async Task<object> CreateTeamAsync(CreateTeamRequestDto req, int actorUserId, string ipAddress, CancellationToken ct)
@@ -49,6 +53,8 @@ namespace DigitalScrumBoard1.Services
                 $"Created team {team.TeamName}",
                 ipAddress,
                 ct);
+
+            await _hub.Clients.Group("admins").SendAsync("AdminDirectoryChanged", new { reason = "teams" }, ct);
 
             return new
             {
