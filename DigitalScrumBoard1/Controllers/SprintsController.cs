@@ -18,15 +18,18 @@ public sealed class SprintsController : ControllerBase
     private readonly ISprintRepository _repo;
     private readonly IAuditService _audit;
     private readonly IHubContext<BoardHub> _hub;
+    private readonly INotificationService _notifications;
 
     public SprintsController(
         ISprintRepository repo,
         IAuditService audit,
-        IHubContext<BoardHub> hub)
+        IHubContext<BoardHub> hub,
+        INotificationService notifications)
     {
         _repo = repo;
         _audit = audit;
         _hub = hub;
+        _notifications = notifications;
     }
 
     [HttpPost]
@@ -119,6 +122,46 @@ public sealed class SprintsController : ControllerBase
             CreatedAt = sprint.CreatedAt,
             UpdatedAt = sprint.UpdatedAt
         }, ct);
+
+        // In-app notifications + SignalR toasts (NotificationHub) for manager / team
+        var notificationRows = new List<Notification>();
+        if (req.ManagedBy.Value != userId.Value)
+        {
+            notificationRows.Add(new Notification
+            {
+                UserID = req.ManagedBy.Value,
+                RelatedSprintID = sprint.SprintID,
+                NotificationType = "SprintManagerAssigned",
+                Message = $"You were assigned as sprint manager for \"{sprintName}\".",
+                CreatedAt = now,
+                IsRead = false
+            });
+        }
+
+        if (req.TeamID.HasValue)
+        {
+            var teamUserIds = await _repo.GetActiveUserIdsForTeamAsync(req.TeamID.Value, ct);
+            var teamName = await _repo.GetTeamNameAsync(req.TeamID.Value, ct) ?? "your team";
+            foreach (var memberId in teamUserIds)
+            {
+                if (memberId == userId.Value)
+                    continue;
+                if (memberId == req.ManagedBy.Value && req.ManagedBy.Value != userId.Value)
+                    continue;
+                notificationRows.Add(new Notification
+                {
+                    UserID = memberId,
+                    RelatedSprintID = sprint.SprintID,
+                    NotificationType = "SprintCreatedForTeam",
+                    Message = $"Sprint \"{sprintName}\" was created for team {teamName}.",
+                    CreatedAt = now,
+                    IsRead = false
+                });
+            }
+        }
+
+        if (notificationRows.Count > 0)
+            await _notifications.AddNotificationsAsync(notificationRows, ct);
 
         var resp = new SprintCreatedResponseDto
         {
@@ -331,9 +374,12 @@ public sealed class SprintsController : ControllerBase
             Message = $"Sprint '{sprint.SprintName}' has been updated.",
             CreatedAt = DateTime.UtcNow,
             IsRead = false
-        });
+        }).ToList();
 
-        await _repo.UpdateSprintAndAddNotificationsAsync(sprint, notifications, ct);
+        sprint.UpdatedAt = DateTime.UtcNow;
+        await _repo.SaveChangesAsync(ct);
+        if (notifications.Count > 0)
+            await _notifications.AddNotificationsAsync(notifications, ct);
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
@@ -455,9 +501,10 @@ public sealed class SprintsController : ControllerBase
             Message = $"Sprint '{sprint.SprintName}' has started.",
             CreatedAt = DateTime.UtcNow,
             IsRead = false
-        });
+        }).ToList();
 
-        await _repo.AddNotificationsAsync(notifications, ct);
+        if (notifications.Count > 0)
+            await _notifications.AddNotificationsAsync(notifications, ct);
 
         // Broadcast to sprint group with complete data
         await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintStarted", new SprintLifecycleBroadcastDto
@@ -551,9 +598,10 @@ public sealed class SprintsController : ControllerBase
             Message = $"Sprint '{sprint.SprintName}' has been stopped.",
             CreatedAt = DateTime.UtcNow,
             IsRead = false
-        });
+        }).ToList();
 
-        await _repo.AddNotificationsAsync(notifications, ct);
+        if (notifications.Count > 0)
+            await _notifications.AddNotificationsAsync(notifications, ct);
 
         // Broadcast to sprint group with complete data
         await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintStopped", new SprintLifecycleBroadcastDto
@@ -655,9 +703,10 @@ public sealed class SprintsController : ControllerBase
                 : $"Sprint '{sprintName}' has been completed.",
             CreatedAt = DateTime.UtcNow,
             IsRead = false
-        });
+        }).ToList();
 
-        await _repo.AddNotificationsAsync(notifications, ct);
+        if (notifications.Count > 0)
+            await _notifications.AddNotificationsAsync(notifications, ct);
 
         // Broadcast to sprint group with complete data
         await _hub.Clients.Group($"sprint-{id}").SendAsync("SprintCompleted", new SprintLifecycleBroadcastDto
@@ -720,9 +769,10 @@ public sealed class SprintsController : ControllerBase
             Message = $"Sprint '{sprint.SprintName}' has been deleted. {returnedToBacklogCount} work item(s) returned to backlog.",
             CreatedAt = DateTime.UtcNow,
             IsRead = false
-        });
+        }).ToList();
 
-        await _repo.AddNotificationsAsync(notifications, ct);
+        if (notifications.Count > 0)
+            await _notifications.AddNotificationsAsync(notifications, ct);
 
         // Broadcast deletion to ALL clients (for real-time backlog/sprint list updates)
         await _hub.Clients.All.SendAsync("SprintDeleted", new

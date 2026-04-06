@@ -16,7 +16,7 @@ type Props = {
     onSuccess?: () => void;
 };
 
-const PRIORITIES: Priority[] = ['Low', 'Medium', 'High', 'Critical'];
+const PRIORITIES: Priority[] = ['Low', 'Medium', 'High'];
 
 export default function AddItemModal({ open, mode, onClose, me, onSuccess }: Props) {
     const [submitting, setSubmitting] = useState(false);

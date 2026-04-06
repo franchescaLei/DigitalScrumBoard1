@@ -7,7 +7,7 @@ public interface IWorkItemRepository
 {
     Task<int?> GetWorkItemTypeIdByNameAsync(string typeName, CancellationToken ct);
 
-    Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted)?> GetWorkItemTypeInfoByIdAsync(
+    Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted, DateOnly? DueDate)?> GetWorkItemTypeInfoByIdAsync(
         int id,
         CancellationToken ct);
 
@@ -20,7 +20,7 @@ public interface IWorkItemRepository
 
     Task AddWithAuditAsync(WorkItem item, AuditLog audit, CancellationToken ct);
 
-    Task<List<(int WorkItemID, string Title, string TypeName)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct);
+    Task<List<(int WorkItemID, string Title, string TypeName, DateOnly? DueDate)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct);
 
     Task<List<EpicTileDto>> GetEpicTilesAsync(CancellationToken ct);
 

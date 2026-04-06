@@ -17,6 +17,38 @@ function getAudioContext(): AudioContext | null {
     return sharedCtx;
 }
 
+/** Call after a user gesture so the chime can play under browser autoplay policies. */
+export function primeNotificationAudioContext(): void {
+    void getAudioContext()?.resume();
+}
+
+const NOTIFICATION_TITLE_BY_TYPE: Record<string, string> = {
+    WorkItemAssigned: "Work item assigned",
+    WorkItemAssignedToSprint: "Work item assigned to sprint",
+    WorkItemRemovedFromSprint: "Work item removed from sprint",
+    WorkItemCommentAdded: "New comment on work item",
+    WorkItemUpdated: "Work item updated",
+    WorkItemArchived: "Work item archived",
+    SprintManagerAssigned: "Sprint manager assigned",
+    SprintCreatedForTeam: "New sprint for your team",
+    SprintUpdated: "Sprint updated",
+    SprintStarted: "Sprint started",
+    SprintStopped: "Sprint stopped",
+    SprintCompleted: "Sprint completed",
+    SprintDeleted: "Sprint deleted",
+    UserAccessUpdated: "Your access was updated",
+    StatusChanged: "Work item status changed",
+    WorkItemReordered: "Work item reordered",
+};
+
+function titleForNotificationType(rawType: string): string {
+    const key = rawType.trim();
+    if (!key) return "Notification";
+    const mapped = NOTIFICATION_TITLE_BY_TYPE[key];
+    if (mapped) return mapped;
+    return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2");
+}
+
 export function playNotificationChime(): void {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -53,11 +85,9 @@ export function parseNotificationBroadcast(dto: unknown): { title: string; messa
     const o = dto as Record<string, unknown>;
     const message = o.message ?? o.Message;
     const notificationType = o.notificationType ?? o.NotificationType;
+    const typeStr = typeof notificationType === "string" ? notificationType : "";
     return {
-        title:
-            typeof notificationType === "string" && notificationType.trim()
-                ? notificationType
-                : "Notification",
+        title: typeStr.trim() ? titleForNotificationType(typeStr) : "Notification",
         message:
             typeof message === "string" && message.trim() ? message : "You have a new notification.",
     };

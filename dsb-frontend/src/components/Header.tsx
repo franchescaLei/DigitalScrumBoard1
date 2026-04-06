@@ -8,7 +8,6 @@ import {
     markNotificationRead,
     NOTIFICATIONS_CHANGED_EVENT,
 } from "../api/notificationsApi";
-import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { ApiError } from "../services/apiClient";
 import { getNotificationHubConnection } from "../services/notificationHub";
@@ -100,7 +99,6 @@ export default function Header() {
     panelOpenRef.current = panelOpen;
 
     const { theme, toggleTheme } = useTheme();
-    const { user } = useAuth();
     const isDark = theme === "dark";
 
     const refreshUnreadCount = useCallback(async () => {
@@ -224,10 +222,18 @@ export default function Header() {
     }, [panelOpen]);
 
     useEffect(() => {
-        if (!user) return;
         const conn = getNotificationHubConnection();
+        if (process.env.NODE_ENV !== "production") {
+            // Helpful diagnostics while we track notification toasts.
+            // eslint-disable-next-line no-console
+            console.debug("[Header] Subscribing to NotificationReceived / NotificationRead. Hub state:", conn.state);
+        }
 
         const onReceived = (dto: unknown) => {
+            if (process.env.NODE_ENV !== "production") {
+                // eslint-disable-next-line no-console
+                console.debug("[Header] NotificationReceived payload:", dto);
+            }
             const { title, message } = parseNotificationBroadcast(dto);
             pushToast(title, message);
             playNotificationChime();
@@ -236,6 +242,10 @@ export default function Header() {
         };
 
         const onReadBroadcast = (dto: Record<string, unknown>) => {
+            if (process.env.NODE_ENV !== "production") {
+                // eslint-disable-next-line no-console
+                console.debug("[Header] NotificationRead broadcast:", dto);
+            }
             const c = dto?.unreadCount ?? dto?.UnreadCount;
             if (typeof c === "number") setUnreadCount(c);
             else void refreshUnreadCount();
@@ -258,7 +268,7 @@ export default function Header() {
             conn.off("NotificationReceived", onReceived);
             conn.off("NotificationRead", onReadBroadcast);
         };
-    }, [user, refreshUnreadCount, loadNotificationsList, pushToast]);
+    }, [refreshUnreadCount, loadNotificationsList, pushToast]);
 
     const handleMarkOneRead = async (item: NotificationListItem) => {
         if (item.isRead) return;

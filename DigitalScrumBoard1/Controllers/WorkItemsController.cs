@@ -17,15 +17,18 @@ public sealed class WorkItemsController : ControllerBase
     private readonly IWorkItemRepository _repo;
     private readonly IAuditService _audit;
     private readonly IHubContext<BoardHub> _hub;
+    private readonly INotificationService _notifications;
 
     public WorkItemsController(
         IWorkItemRepository repo,
         IAuditService audit,
-        IHubContext<BoardHub> hub)
+        IHubContext<BoardHub> hub,
+        INotificationService notifications)
     {
         _repo = repo;
         _audit = audit;
         _hub = hub;
+        _notifications = notifications;
     }
 
     [HttpPost]
@@ -105,6 +108,13 @@ public sealed class WorkItemsController : ControllerBase
                 if (parentType != epicTypeId.Value && parentType != storyTypeId.Value)
                     return BadRequest(new { message = "Task parent must be an Epic or Story." });
 
+                if (req.DueDate.HasValue && taskParent.Value.WorkItemTypeID == storyTypeId.Value)
+                {
+                    var storyDueDate = taskParent.Value.DueDate;
+                    if (storyDueDate.HasValue && req.DueDate.Value > storyDueDate.Value)
+                        return BadRequest(new { message = $"Task due date cannot be later than its parent story's due date ({storyDueDate.Value})." });
+                }
+
                 break;
         }
 
@@ -133,6 +143,7 @@ public sealed class WorkItemsController : ControllerBase
             WorkItemTypeID = workItemTypeId,
             ParentWorkItemID = type == "Epic" ? null : req.ParentWorkItemID,
             TeamID = type == "Epic" ? null : req.TeamID,
+            DueDate = req.DueDate,
             AssignedUserID = req.AssignedUserID,
             SprintID = null,
             CreatedByUserID = userId.Value,
@@ -159,7 +170,7 @@ public sealed class WorkItemsController : ControllerBase
 
         if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId.Value)
         {
-            await _repo.AddNotificationsAsync(new[]
+            await _notifications.AddNotificationsAsync(new[]
             {
                 new Notification
                 {
@@ -171,8 +182,6 @@ public sealed class WorkItemsController : ControllerBase
                     IsRead = false
                 }
             }, ct);
-
-            await _repo.SaveChangesAsync(ct);
         }
 
         var resp = new WorkItemCreatedResponseDto
@@ -298,8 +307,8 @@ public sealed class WorkItemsController : ControllerBase
             userId.Value,
             null);
 
-        await _repo.AddNotificationsAsync(
-            relatedUserIds.Select(targetUserId => new Notification
+        var commentNotifications = relatedUserIds
+            .Select(targetUserId => new Notification
             {
                 UserID = targetUserId,
                 Message = $"A new comment was added to work item '{workItem.Title}'.",
@@ -308,10 +317,13 @@ public sealed class WorkItemsController : ControllerBase
                 RelatedSprintID = workItem.SprintID,
                 CreatedAt = now,
                 IsRead = false
-            }),
-            ct);
+            })
+            .ToList();
 
-        await _repo.SaveChangesAsync(ct);
+        if (commentNotifications.Count > 0)
+            await _notifications.AddNotificationsAsync(commentNotifications, ct);
+        else
+            await _repo.SaveChangesAsync(ct);
 
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
@@ -384,7 +396,7 @@ public sealed class WorkItemsController : ControllerBase
             : new[] { epicTypeId.Value, storyTypeId.Value };
 
         var parents = await _repo.ListParentsAsync(allowed, ct);
-        var resp = parents.Select(p => new { p.WorkItemID, p.Title, Type = p.TypeName }).ToList();
+        var resp = parents.Select(p => new { p.WorkItemID, p.Title, Type = p.TypeName, p.DueDate }).ToList();
         return Ok(resp);
     }
 
@@ -551,7 +563,7 @@ public sealed class WorkItemsController : ControllerBase
 
         if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
         {
-            await _repo.AddNotificationsAsync(new[]
+            await _notifications.AddNotificationsAsync(new[]
             {
                 new Notification
                 {
@@ -564,8 +576,6 @@ public sealed class WorkItemsController : ControllerBase
                     IsRead = false
                 }
             }, ct);
-
-            await _repo.SaveChangesAsync(ct);
         }
 
         // Broadcast sprint assignment to ALL clients for real-time backlog/sprint list updates
@@ -647,7 +657,7 @@ public sealed class WorkItemsController : ControllerBase
 
         if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
         {
-            await _repo.AddNotificationsAsync(new[]
+            await _notifications.AddNotificationsAsync(new[]
             {
                 new Notification
                 {
@@ -659,8 +669,6 @@ public sealed class WorkItemsController : ControllerBase
                     IsRead = false
                 }
             }, ct);
-
-            await _repo.SaveChangesAsync(ct);
         }
 
         // Broadcast sprint removal to ALL clients for real-time backlog/sprint list updates
@@ -1016,13 +1024,15 @@ public sealed class WorkItemsController : ControllerBase
             });
         }
 
-        await _repo.AddNotificationsAsync(
-            notifications
-                .GroupBy(x => new { x.UserID, x.NotificationType, x.Message, x.RelatedWorkItemID, x.RelatedSprintID })
-                .Select(g => g.First()),
-            ct);
+        var patchNotifications = notifications
+            .GroupBy(x => new { x.UserID, x.NotificationType, x.Message, x.RelatedWorkItemID, x.RelatedSprintID })
+            .Select(g => g.First())
+            .ToList();
 
-        await _repo.SaveChangesAsync(ct);
+        if (patchNotifications.Count > 0)
+            await _notifications.AddNotificationsAsync(patchNotifications, ct);
+        else
+            await _repo.SaveChangesAsync(ct);
 
         await _audit.LogAsync(
             userId.Value,
@@ -1143,8 +1153,8 @@ public sealed class WorkItemsController : ControllerBase
             userId.Value,
             null);
 
-        await _repo.AddNotificationsAsync(
-            relatedUserIds.Select(targetUserId => new Notification
+        var archiveNotifications = relatedUserIds
+            .Select(targetUserId => new Notification
             {
                 UserID = targetUserId,
                 Message = $"Work item '{workItem.Title}' was archived.",
@@ -1153,10 +1163,13 @@ public sealed class WorkItemsController : ControllerBase
                 RelatedSprintID = workItem.SprintID,
                 CreatedAt = now,
                 IsRead = false
-            }),
-            ct);
+            })
+            .ToList();
 
-        await _repo.SaveChangesAsync(ct);
+        if (archiveNotifications.Count > 0)
+            await _notifications.AddNotificationsAsync(archiveNotifications, ct);
+        else
+            await _repo.SaveChangesAsync(ct);
 
         await _audit.LogAsync(
             userId.Value,

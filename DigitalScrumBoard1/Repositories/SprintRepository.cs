@@ -27,6 +27,25 @@ public sealed class SprintRepository : ISprintRepository
             .AnyAsync(t => t.TeamID == teamId, ct);
     }
 
+    public async Task<List<int>> GetActiveUserIdsForTeamAsync(int teamId, CancellationToken ct)
+    {
+        return await _db.Users
+            .AsNoTracking()
+            .Where(u => u.TeamID == teamId && !u.Disabled)
+            .Select(u => u.UserID)
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
+    public async Task<string?> GetTeamNameAsync(int teamId, CancellationToken ct)
+    {
+        return await _db.Teams
+            .AsNoTracking()
+            .Where(t => t.TeamID == teamId)
+            .Select(t => t.TeamName)
+            .FirstOrDefaultAsync(ct);
+    }
+
     public async Task<List<Sprint>> GetAllAsync(CancellationToken ct)
     {
         return await _db.Sprints

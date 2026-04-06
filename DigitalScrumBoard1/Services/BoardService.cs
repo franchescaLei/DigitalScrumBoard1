@@ -15,17 +15,20 @@ public class BoardService : IBoardService
     private readonly IHubContext<BoardHub> _hub;
     private readonly DigitalScrumBoardContext _db;
     private readonly IAuditService _audit;
+    private readonly INotificationService _notifications;
 
     public BoardService(
         IBoardRepository repo,
         IHubContext<BoardHub> hub,
         DigitalScrumBoardContext db,
-        IAuditService audit)
+        IAuditService audit,
+        INotificationService notifications)
     {
         _repo = repo;
         _hub = hub;
         _db = db;
         _audit = audit;
+        _notifications = notifications;
     }
 
     public Task<List<ActiveBoardDto>> GetActiveBoardsAsync(CancellationToken ct)
@@ -194,6 +197,21 @@ public class BoardService : IBoardService
         NormalizeColumnBoardOrder(sourceOrdered, now, changedBoardOrders);
         NormalizeColumnBoardOrder(destinationOrdered, now, changedBoardOrders);
 
+        Notification? assigneeStatusNotification = null;
+        if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
+        {
+            assigneeStatusNotification = new Notification
+            {
+                UserID = item.AssignedUserID.Value,
+                Message = $"Work item '{item.Title}' was moved from {oldStatus} to {normalizedStatus}.",
+                NotificationType = "StatusChanged",
+                RelatedWorkItemID = item.WorkItemID,
+                RelatedSprintID = item.SprintID,
+                CreatedAt = now,
+                IsRead = false
+            };
+        }
+
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
@@ -220,19 +238,6 @@ public class BoardService : IBoardService
                 }, ct);
             }
 
-            if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
-            {
-                await _repo.AddNotificationAsync(new Notification
-                {
-                    UserID = item.AssignedUserID.Value,
-                    Message = $"Work item '{item.Title}' was moved from {oldStatus} to {normalizedStatus}.",
-                    NotificationType = "StatusChanged",
-                    RelatedWorkItemID = item.WorkItemID,
-                    CreatedAt = now,
-                    IsRead = false
-                }, ct);
-            }
-
             await _repo.SaveAsync(ct);
             await tx.CommitAsync(ct);
         }
@@ -246,6 +251,9 @@ public class BoardService : IBoardService
             await tx.RollbackAsync(ct);
             throw;
         }
+
+        if (assigneeStatusNotification is not null)
+            await _notifications.AddNotificationsAsync(new[] { assigneeStatusNotification }, ct);
 
         await _audit.LogAsync(
             userId,
@@ -373,6 +381,21 @@ public class BoardService : IBoardService
         if (changedItems.Count == 0)
             return;
 
+        Notification? assigneeReorderNotification = null;
+        if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
+        {
+            assigneeReorderNotification = new Notification
+            {
+                UserID = item.AssignedUserID.Value,
+                Message = $"Work item '{item.Title}' was reordered on the board.",
+                NotificationType = "WorkItemReordered",
+                RelatedWorkItemID = item.WorkItemID,
+                RelatedSprintID = item.SprintID,
+                CreatedAt = now,
+                IsRead = false
+            };
+        }
+
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
@@ -389,21 +412,6 @@ public class BoardService : IBoardService
                 }, ct);
             }
 
-            // Add notification for assignee if different from actor
-            if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId)
-            {
-                await _repo.AddNotificationAsync(new Notification
-                {
-                    UserID = item.AssignedUserID.Value,
-                    Message = $"Work item '{item.Title}' was reordered on the board.",
-                    NotificationType = "WorkItemReordered",
-                    RelatedWorkItemID = item.WorkItemID,
-                    RelatedSprintID = item.SprintID,
-                    CreatedAt = now,
-                    IsRead = false
-                }, ct);
-            }
-
             await _repo.SaveAsync(ct);
             await tx.CommitAsync(ct);
         }
@@ -417,6 +425,9 @@ public class BoardService : IBoardService
             await tx.RollbackAsync(ct);
             throw;
         }
+
+        if (assigneeReorderNotification is not null)
+            await _notifications.AddNotificationsAsync(new[] { assigneeReorderNotification }, ct);
 
         await _audit.LogAsync(
             userId,

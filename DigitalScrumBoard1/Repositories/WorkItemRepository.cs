@@ -23,7 +23,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted)?> GetWorkItemTypeInfoByIdAsync(
+    public async Task<(int WorkItemID, int WorkItemTypeID, bool IsDeleted, DateOnly? DueDate)?> GetWorkItemTypeInfoByIdAsync(
         int id,
         CancellationToken ct)
     {
@@ -31,12 +31,12 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(w => w.WorkItemID == id)
-            .Select(w => new { w.WorkItemID, w.WorkItemTypeID, w.IsDeleted })
+            .Select(w => new { w.WorkItemID, w.WorkItemTypeID, w.IsDeleted, w.DueDate })
             .FirstOrDefaultAsync(ct);
 
         if (row is null) return null;
 
-        return (row.WorkItemID, row.WorkItemTypeID, row.IsDeleted);
+        return (row.WorkItemID, row.WorkItemTypeID, row.IsDeleted, row.DueDate);
     }
 
     public async Task<WorkItem?> GetByIdAsync(int id, CancellationToken ct)
@@ -81,18 +81,18 @@ public sealed class WorkItemRepository : IWorkItemRepository
         }
     }
 
-    public async Task<List<(int WorkItemID, string Title, string TypeName)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct)
+    public async Task<List<(int WorkItemID, string Title, string TypeName, DateOnly? DueDate)>> ListParentsAsync(int[] allowedTypeIds, CancellationToken ct)
     {
         var rows = await (
             from w in _db.WorkItems.AsNoTracking()
             join t in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals t.WorkItemTypeID
             where !w.IsDeleted && allowedTypeIds.Contains(w.WorkItemTypeID)
             orderby w.WorkItemID descending
-            select new { w.WorkItemID, w.Title, t.TypeName })
+            select new { w.WorkItemID, w.Title, t.TypeName, w.DueDate })
             .Take(200)
             .ToListAsync(ct);
 
-        return rows.Select(r => (r.WorkItemID, r.Title ?? "", r.TypeName)).ToList();
+        return rows.Select(r => (r.WorkItemID, r.Title ?? "", r.TypeName, r.DueDate)).ToList();
     }
 
     public async Task<List<EpicTileDto>> GetEpicTilesAsync(CancellationToken ct)
@@ -786,26 +786,25 @@ public sealed class WorkItemRepository : IWorkItemRepository
 
         var sprintIds = sprintRows.Select(s => s.SprintID).ToList();
 
-        var sprintWorkItemsQuery = (
-            from w in _db.WorkItems.AsNoTracking()
-            join wt in _db.WorkItemTypes.AsNoTracking()
-                on w.WorkItemTypeID equals wt.WorkItemTypeID
-            where !w.IsDeleted
+        var sprintWorkItemsQuery = _db.WorkItems
+            .AsNoTracking()
+            .Where(w => !w.IsDeleted
                   && w.SprintID.HasValue
                   && sprintIds.Contains(w.SprintID.Value)
-                  && allowedTypeIds.Contains(w.WorkItemTypeID)
-            select new AgendaWorkItemDto
+                  && allowedTypeIds.Contains(w.WorkItemTypeID))
+            .Select(w => new AgendaWorkItemDto
             {
                 WorkItemID = w.WorkItemID,
                 Title = w.Title ?? "",
-                TypeName = wt.TypeName,
+                TypeName = w.WorkItemType.TypeName,
                 Status = w.Status ?? "",
                 Priority = w.Priority,
+                DueDate = w.DueDate,
                 ParentWorkItemID = w.ParentWorkItemID,
                 SprintID = w.SprintID,
                 TeamID = w.TeamID,
                 AssignedUserID = w.AssignedUserID
-            }) as IQueryable<AgendaWorkItemDto>;
+            });
 
         if (!string.IsNullOrWhiteSpace(status))
             sprintWorkItemsQuery = sprintWorkItemsQuery.Where(w => w.Status == status);
@@ -837,26 +836,25 @@ public sealed class WorkItemRepository : IWorkItemRepository
         }
 
         // Backlog: Story/Task with no sprint and not completed.
-        var backlogWorkItemsQuery = (
-            from w in _db.WorkItems.AsNoTracking()
-            join wt in _db.WorkItemTypes.AsNoTracking()
-                on w.WorkItemTypeID equals wt.WorkItemTypeID
-            where !w.IsDeleted
+        var backlogWorkItemsQuery = _db.WorkItems
+            .AsNoTracking()
+            .Where(w => !w.IsDeleted
                   && !w.SprintID.HasValue
                   && allowedTypeIds.Contains(w.WorkItemTypeID)
-                  && w.Status != "Completed"
-            select new AgendaWorkItemDto
+                  && w.Status != "Completed")
+            .Select(w => new AgendaWorkItemDto
             {
                 WorkItemID = w.WorkItemID,
                 Title = w.Title ?? "",
-                TypeName = wt.TypeName,
+                TypeName = w.WorkItemType.TypeName,
                 Status = w.Status ?? "",
                 Priority = w.Priority,
+                DueDate = w.DueDate,
                 ParentWorkItemID = w.ParentWorkItemID,
                 SprintID = w.SprintID,
                 TeamID = w.TeamID,
                 AssignedUserID = w.AssignedUserID
-            }) as IQueryable<AgendaWorkItemDto>;
+            });
 
         if (!string.IsNullOrWhiteSpace(status))
             backlogWorkItemsQuery = backlogWorkItemsQuery.Where(w => w.Status == status);
@@ -902,6 +900,9 @@ public sealed class WorkItemRepository : IWorkItemRepository
             "Status" => descending
                 ? q.OrderByDescending(w => w.Status)
                 : q.OrderBy(w => w.Status),
+            "DueDate" => descending
+                ? q.OrderByDescending(w => w.DueDate.HasValue).ThenByDescending(w => w.DueDate)
+                : q.OrderBy(w => w.DueDate.HasValue ? 0 : 1).ThenBy(w => w.DueDate),
             "WorkItemID" => descending
                 ? q.OrderByDescending(w => w.WorkItemID)
                 : q.OrderBy(w => w.WorkItemID),

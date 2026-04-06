@@ -18,6 +18,7 @@ function normalizeAgendaWorkItem(raw: Record<string, unknown>): AgendaWorkItem {
         typeName: String(pickField(raw, 'typeName', 'TypeName') ?? ''),
         status: String(pickField(raw, 'status', 'Status') ?? ''),
         priority: (pickField<string | null>(raw, 'priority', 'Priority') as string | null | undefined) ?? null,
+        dueDate: (pickField<string | null>(raw, 'dueDate', 'DueDate') as string | null | undefined) ?? null,
         parentWorkItemID:
             (pickField<number | null>(raw, 'parentWorkItemID', 'ParentWorkItemID') as number | null | undefined) ??
             null,
@@ -109,15 +110,40 @@ export const removeFromSprint = async (workItemId: number) =>
 export const getWorkItemDetails = async (workItemId: number): Promise<WorkItemDetails> =>
     apiClient.get<WorkItemDetails>(`/api/workitems/${workItemId}/details`);
 
+export type WorkItemParentOption = {
+    workItemID: number;
+    title: string;
+    typeName: string;
+    dueDate: string | null;
+};
+
+function normalizeWorkItemParent(raw: Record<string, unknown>): WorkItemParentOption {
+    return {
+        workItemID: Number(pickField(raw, 'workItemID', 'WorkItemID') ?? 0),
+        title: String(pickField(raw, 'title', 'Title') ?? ''),
+        typeName: String(pickField(raw, 'type', 'Type') ?? ''),
+        dueDate: (pickField<string | null>(raw, 'dueDate', 'DueDate') as string | null | undefined) ?? null,
+    };
+}
+
+/** Parent work items allowed for Story (Epics) or Task (Epics + Stories). */
+export const getWorkItemParents = async (forType: 'Story' | 'Task'): Promise<WorkItemParentOption[]> => {
+    const qs = new URLSearchParams({ forType });
+    const resp = await apiClient.get<Record<string, unknown>[]>(`/api/workitems/parents?${qs.toString()}`);
+    if (!Array.isArray(resp)) return [];
+    return resp.map(r => normalizeWorkItemParent(r));
+};
+
 // Used by "Add Item" modal
 export const createWorkItem = async (payload: {
     type: 'Epic' | 'Story' | 'Task';
     title: string;
     description: string;
-    priority: 'Low' | 'Medium' | 'High' | 'Critical';
+    priority: 'Low' | 'Medium' | 'High';
     parentWorkItemID?: number | null;
     teamID?: number | null;
     assignedUserID?: number | null;
+    dueDate: string;
 }) =>
     apiClient.post('/api/workitems', {
         type: payload.type,
@@ -127,6 +153,7 @@ export const createWorkItem = async (payload: {
         parentWorkItemID: payload.parentWorkItemID ?? null,
         teamID: payload.teamID ?? null,
         assignedUserID: payload.assignedUserID ?? null,
+        dueDate: payload.dueDate,
     });
 
 // Used by sprint work-item assignee actions

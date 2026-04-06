@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { StatusBanner } from '../components/auth/CountdownBanner';
-import apiClient, { ApiError } from '../services/apiClient';
+import { ApiError } from '../services/apiClient';
 import { getCurrentUser } from '../api/authApi';
 import {
     getEpicTiles,
@@ -13,725 +13,114 @@ import {
 } from '../api/workItemsApi';
 import {
     completeSprint,
-    createSprint,
     deleteSprint,
     listSprints,
     patchSprint,
     startSprint,
     stopSprint,
 } from '../api/sprintsApi';
+import { lookupUsers, type UserLookup } from '../api/lookupsApi';
 import type { AgendaWorkItem, EpicTile, SprintSummary } from '../types/planning';
 import type { UserProfile } from '../types/auth';
-import { isElevatedWorkspaceRole } from '../utils/userProfile';
+import {
+    AddItemMenu,
+    AssigneePickerModal,
+    CreateEpicModal,
+    CreateSprintModal,
+    CreateWorkItemModal,
+    DeleteSprintConfirmModal,
+    ManageSprintModal,
+    WorkItemDetailModal,
+    STORY_TYPE,
+    TASK_TYPE,
+    normTypeName,
+    formatDateRange,
+    canManageSprint,
+    sprintManagerLabel,
+    priorityAccentClass,
+    sprintStatusClass,
+    TooltipIcon,
+    useDebounced,
+    type AddItemTarget,
+} from './backlogs';
 import { getBoardHubConnection } from '../services/boardHub';
+import { getNotificationHubConnection } from '../services/notificationHub';
+import * as signalR from '@microsoft/signalr';
 import '../styles/admin.css';
 import '../styles/backlogs.css';
+import '../styles/backlogs-story-pills.css';
 
-const STORY_TYPE = 'Story';
-const TASK_TYPE = 'Task';
-
-function normTypeName(w: Pick<AgendaWorkItem, 'typeName'>): string {
-    return (w.typeName ?? '').trim().toLowerCase();
-}
-
-type UserLookup = {
-    userID: number;
-    displayName: string;
-    emailAddress: string;
-    teamID: number | null;
-    teamName: string | null;
-};
-
-function formatDateRange(startDate: string | null | undefined, endDate: string | null | undefined) {
-    if (!startDate && !endDate) return '—';
-    if (!startDate) return endDate ?? '';
-    if (!endDate) return startDate;
-    // Format as "Sept 22 2026 – Sept 25 2026"
-    const fmt = (d: string) => {
-        const date = new Date(d);
-        if (isNaN(date.getTime())) return d;
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    };
-    return `${fmt(startDate)} – ${fmt(endDate)}`;
-}
-
-function computeDurationDays(startDate: string | null | undefined, endDate: string | null | undefined) {
-    if (!startDate || !endDate) return null;
-    const s = new Date(startDate);
-    const e = new Date(endDate);
-    if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
-    const ms = e.getTime() - s.getTime();
-    const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
-    return days >= 0 ? days : null;
-}
-
-function canManageSprint(me: UserProfile | null, sprint: SprintSummary) {
-    if (!me) return false;
-    if (isElevatedWorkspaceRole(me)) return true;
-    if (me.userID && sprint.managedBy !== null && sprint.managedBy === me.userID) return true;
-    return false;
-}
-
-function sprintManagerLabel(s: SprintSummary): string {
-    const n = s.managedByName?.trim();
-    if (n) return n;
-    return 'TBD';
-}
-
-function priorityAccentClass(priority: string | null | undefined): string {
-    switch ((priority ?? '').toLowerCase()) {
-        case 'critical': return 'wi-accent--critical';
-        case 'high': return 'wi-accent--high';
-        case 'medium': return 'wi-accent--medium';
-        case 'low': return 'wi-accent--low';
-        default: return 'wi-accent--default';
+/** Sprint id from BoardHub payloads (camelCase / PascalCase). */
+function sprintIdFromBoardPayload(payload: unknown): number | undefined {
+    if (payload == null || typeof payload !== 'object') return undefined;
+    const o = payload as Record<string, unknown>;
+    const candidates = [o.sprintID, o.SprintID, o.oldSprintID, o.OldSprintID];
+    for (const c of candidates) {
+        if (typeof c === 'number' && c > 0) return c;
     }
+    return undefined;
 }
 
-function sprintStatusClass(status: string): string {
-    switch (status.toLowerCase()) {
-        case 'active': return 'sprint-badge--active';
-        case 'planned': return 'sprint-badge--planned';
-        case 'completed': return 'sprint-badge--completed';
-        default: return 'sprint-badge--planned';
-    }
+function isPlanningNotificationPayload(dto: unknown): boolean {
+    if (!dto || typeof dto !== 'object') return false;
+    const o = dto as Record<string, unknown>;
+    const sid = o.relatedSprintID ?? o.RelatedSprintID;
+    const wid = o.relatedWorkItemID ?? o.RelatedWorkItemID;
+    if (typeof sid === 'number' && sid > 0) return true;
+    if (typeof wid === 'number' && wid > 0) return true;
+    const type = String(o.notificationType ?? o.NotificationType ?? '').toLowerCase();
+    return (
+        type.includes('sprint') ||
+        type.includes('workitem') ||
+        type.includes('assign') ||
+        type.includes('backlog') ||
+        type.includes('comment')
+    );
 }
+
+function relatedSprintIdFromNotification(dto: unknown): number | undefined {
+    if (!dto || typeof dto !== 'object') return undefined;
+    const o = dto as Record<string, unknown>;
+    const sid = o.relatedSprintID ?? o.RelatedSprintID;
+    return typeof sid === 'number' && sid > 0 ? sid : undefined;
+}
+
+const BOARD_HUB_PLANNING_EVENTS = [
+    'SprintCreated',
+    'SprintUpdated',
+    'SprintStarted',
+    'SprintStopped',
+    'SprintCompleted',
+    'SprintDeleted',
+    'WorkItemCreated',
+    'WorkItemAssignedToSprint',
+    'WorkItemRemovedFromSprint',
+    'WorkItemUpdated',
+    'WorkItemDeleted',
+    'WorkItemStatusChanged',
+] as const;
 
 type StatusState =
     | { kind: 'none' }
     | { kind: 'error'; message: string }
     | { kind: 'success'; message: string };
 
-// ─────────────────────────────────────────────
-// ADD ITEM MODAL TYPES
-// ─────────────────────────────────────────────
-type AddItemTarget = 'epic' | 'workitem' | 'sprint' | null;
-
-// ─────────────────────────────────────────────
-// TOOLTIP ICON
-// ─────────────────────────────────────────────
-function TooltipIcon({ text }: { text: string }) {
+function IconFilter() {
     return (
-        <span className="bl-tooltip" title={text} aria-label={text}>
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" strokeWidth="1.1" />
-                <path d="M6.5 5.8v3M6.5 4.2h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-            </svg>
-        </span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" />
+        </svg>
     );
 }
 
-// ─────────────────────────────────────────────
-// FIELD ERROR
-// ─────────────────────────────────────────────
-function FieldError({ message }: { message?: string }) {
-    if (!message) return null;
+function IconSort() {
     return (
-        <span className="bl-field-error" role="alert">
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-                <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2" />
-                <line x1="6" y1="4" x2="6" y2="6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                <circle cx="6" cy="8.5" r="0.5" fill="currentColor" />
-            </svg>
-            {message}
-        </span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M7 11l5-5 5 5M7 13l5 5 5-5" />
+        </svg>
     );
 }
 
-// ─────────────────────────────────────────────
-// CREATE EPIC MODAL
-// ─────────────────────────────────────────────
-function CreateEpicModal({ onClose }: { onClose: () => void }) {
-    const [epicTitle, setEpicTitle] = useState('');
-    const [description, setDescription] = useState('');
-    const [errors, setErrors] = useState<Record<string, string>>({});
-    const [loading, setLoading] = useState(false);
-
-    const validate = () => {
-        const e: Record<string, string> = {};
-        if (!epicTitle.trim()) e.epicTitle = 'Epic title is required.';
-        else if (epicTitle.length > 100) e.epicTitle = 'Title must be 100 characters or fewer.';
-        if (description.length > 500) e.description = 'Description must be 500 characters or fewer.';
-        return e;
-    };
-
-    const handleSubmit = async () => {
-        const e = validate();
-        setErrors(e);
-        if (Object.keys(e).length > 0) return;
-        setLoading(true);
-        try {
-            await apiClient.post('/api/epics', { epicTitle: epicTitle.trim(), description: description.trim() });
-            onClose();
-        } catch (err) {
-            setErrors({ submit: err instanceof Error ? err.message : 'Failed to create epic.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Create Epic" onClick={onClose}>
-            <div className="bl-modal" onClick={e => e.stopPropagation()}>
-                <div className="bl-modal-header">
-                    <div>
-                        <p className="bl-modal-eyebrow">New Epic</p>
-                        <h2 className="bl-modal-title">Create Epic</h2>
-                    </div>
-                    <button className="bl-modal-close" onClick={onClose} aria-label="Close">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                    </button>
-                </div>
-
-                <div className="bl-modal-body">
-                    {errors.submit && <div className="form-error" style={{ marginBottom: 14 }}>{errors.submit}</div>}
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="ce-title">
-                                Epic Title <span className="bl-required">*</span>
-                            </label>
-                            <TooltipIcon text="A short, descriptive name for this epic. Epics group related stories and tasks." />
-                        </div>
-                        <input
-                            id="ce-title"
-                            className={`input${errors.epicTitle ? ' input--error' : ''}`}
-                            placeholder="e.g. Authentication & Access Control"
-                            value={epicTitle}
-                            maxLength={100}
-                            disabled={loading}
-                            onChange={e => setEpicTitle(e.target.value)}
-                        />
-                        <FieldError message={errors.epicTitle} />
-                    </div>
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="ce-desc">Description</label>
-                            <TooltipIcon text="Describe the scope, goals, and success criteria for this epic." />
-                        </div>
-                        <textarea
-                            id="ce-desc"
-                            className={`input input--textarea${errors.description ? ' input--error' : ''}`}
-                            placeholder="What does this epic cover? What are the goals?"
-                            value={description}
-                            maxLength={500}
-                            rows={4}
-                            disabled={loading}
-                            onChange={e => setDescription(e.target.value)}
-                        />
-                        <FieldError message={errors.description} />
-                    </div>
-                </div>
-
-                <div className="bl-modal-footer">
-                    <button className="btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
-                    <button className="btn-primary" onClick={handleSubmit} disabled={loading} aria-busy={loading}>
-                        {loading ? <><span className="btn-spinner" />Creating…</> : 'Create Epic'}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─────────────────────────────────────────────
-// CREATE WORK ITEM MODAL
-// ─────────────────────────────────────────────
-function CreateWorkItemModal({ onClose }: { onClose: () => void }) {
-    const [title, setTitle] = useState('');
-    const [description, setDescription] = useState('');
-    const [type, setType] = useState('Story');
-    const [priority, setPriority] = useState('Medium');
-    const [storyPoints, setStoryPoints] = useState('');
-    const [errors, setErrors] = useState<Record<string, string>>({});
-    const [loading, setLoading] = useState(false);
-
-    const validate = () => {
-        const e: Record<string, string> = {};
-        if (!title.trim()) e.title = 'Title is required.';
-        else if (title.length > 200) e.title = 'Title must be 200 characters or fewer.';
-        if (description.length > 2000) e.description = 'Description must be 2000 characters or fewer.';
-        if (storyPoints && (isNaN(Number(storyPoints)) || Number(storyPoints) < 0)) e.storyPoints = 'Story points must be a positive number.';
-        return e;
-    };
-
-    const handleSubmit = async () => {
-        const e = validate();
-        setErrors(e);
-        if (Object.keys(e).length > 0) return;
-        setLoading(true);
-        try {
-            await apiClient.post('/api/work-items', {
-                title: title.trim(),
-                description: description.trim(),
-                typeName: type,
-                priority,
-                storyPoints: storyPoints ? Number(storyPoints) : null,
-            });
-            onClose();
-        } catch (err) {
-            setErrors({ submit: err instanceof Error ? err.message : 'Failed to create work item.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Create Work Item" onClick={onClose}>
-            <div className="bl-modal" onClick={e => e.stopPropagation()}>
-                <div className="bl-modal-header">
-                    <div>
-                        <p className="bl-modal-eyebrow">New Work Item</p>
-                        <h2 className="bl-modal-title">Create Work Item</h2>
-                    </div>
-                    <button className="bl-modal-close" onClick={onClose} aria-label="Close">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                    </button>
-                </div>
-
-                <div className="bl-modal-body">
-                    {errors.submit && <div className="form-error" style={{ marginBottom: 14 }}>{errors.submit}</div>}
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="cwi-title">
-                                Title <span className="bl-required">*</span>
-                            </label>
-                            <TooltipIcon text="A concise description of the work to be done. Use action verbs." />
-                        </div>
-                        <input
-                            id="cwi-title"
-                            className={`input${errors.title ? ' input--error' : ''}`}
-                            placeholder="e.g. Implement JWT refresh token logic"
-                            value={title}
-                            maxLength={200}
-                            disabled={loading}
-                            onChange={e => setTitle(e.target.value)}
-                        />
-                        <FieldError message={errors.title} />
-                    </div>
-
-                    <div className="bl-field-row">
-                        <div className="bl-field">
-                            <div className="bl-field-label-row">
-                                <label className="bl-field-label" htmlFor="cwi-type">Type</label>
-                                <TooltipIcon text="Story: user-facing feature. Task: technical or internal work." />
-                            </div>
-                            <select id="cwi-type" className="select" value={type} onChange={e => setType(e.target.value)} disabled={loading}>
-                                <option value="Story">Story</option>
-                                <option value="Task">Task</option>
-                            </select>
-                        </div>
-                        <div className="bl-field">
-                            <div className="bl-field-label-row">
-                                <label className="bl-field-label" htmlFor="cwi-priority">Priority</label>
-                                <TooltipIcon text="How urgently this item needs to be addressed." />
-                            </div>
-                            <select id="cwi-priority" className="select" value={priority} onChange={e => setPriority(e.target.value)} disabled={loading}>
-                                <option value="Low">Low</option>
-                                <option value="Medium">Medium</option>
-                                <option value="High">High</option>
-                                <option value="Critical">Critical</option>
-                            </select>
-                        </div>
-                        <div className="bl-field">
-                            <div className="bl-field-label-row">
-                                <label className="bl-field-label" htmlFor="cwi-sp">Story Points</label>
-                                <TooltipIcon text="Estimated effort in story points (Fibonacci scale recommended)." />
-                            </div>
-                            <input
-                                id="cwi-sp"
-                                className={`input${errors.storyPoints ? ' input--error' : ''}`}
-                                placeholder="e.g. 5"
-                                value={storyPoints}
-                                disabled={loading}
-                                onChange={e => setStoryPoints(e.target.value)}
-                            />
-                            <FieldError message={errors.storyPoints} />
-                        </div>
-                    </div>
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="cwi-desc">Description</label>
-                            <TooltipIcon text="Acceptance criteria, context, or technical notes for this item." />
-                        </div>
-                        <textarea
-                            id="cwi-desc"
-                            className={`input input--textarea${errors.description ? ' input--error' : ''}`}
-                            placeholder="Describe what needs to be done, including acceptance criteria…"
-                            value={description}
-                            maxLength={2000}
-                            rows={4}
-                            disabled={loading}
-                            onChange={e => setDescription(e.target.value)}
-                        />
-                        <FieldError message={errors.description} />
-                    </div>
-                </div>
-
-                <div className="bl-modal-footer">
-                    <button className="btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
-                    <button className="btn-primary" onClick={handleSubmit} disabled={loading} aria-busy={loading}>
-                        {loading ? <><span className="btn-spinner" />Creating…</> : 'Create Work Item'}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─────────────────────────────────────────────
-// CREATE SPRINT MODAL
-// ─────────────────────────────────────────────
-function CreateSprintModal({
-    onClose,
-    onCreated,
-    managedByUserId,
-    teamID,
-}: {
-    onClose: () => void;
-    onCreated?: () => void;
-    managedByUserId: number | null;
-    teamID: number | null;
-}) {
-    const [sprintName, setSprintName] = useState('');
-    const [goal, setGoal] = useState('');
-    const [startDate, setStartDate] = useState('');
-    const [endDate, setEndDate] = useState('');
-    const [errors, setErrors] = useState<Record<string, string>>({});
-    const [loading, setLoading] = useState(false);
-
-    const validate = () => {
-        const e: Record<string, string> = {};
-        if (!sprintName.trim()) e.sprintName = 'Sprint name is required.';
-        else if (sprintName.length > 100) e.sprintName = 'Name must be 100 characters or fewer.';
-        const g = goal.trim();
-        if (!g) e.goal = 'Sprint goal is required.';
-        else if (g.length > 255) e.goal = 'Goal must be 255 characters or fewer.';
-        if (!startDate) e.startDate = 'Start date is required.';
-        if (!endDate) e.endDate = 'End date is required.';
-        if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
-            e.endDate = 'End date must be on or after start date.';
-        }
-        if (managedByUserId == null || !Number.isFinite(managedByUserId)) {
-            e.managedBy = 'Your account could not be loaded. Refresh the page and try again.';
-        }
-        return e;
-    };
-
-    const handleSubmit = async () => {
-        const e = validate();
-        setErrors(e);
-        if (Object.keys(e).length > 0) return;
-        if (managedByUserId == null || !Number.isFinite(managedByUserId)) return;
-        setLoading(true);
-        try {
-            await createSprint({
-                sprintName: sprintName.trim(),
-                goal: goal.trim(),
-                startDate,
-                endDate,
-                managedBy: managedByUserId,
-                teamID: teamID ?? null,
-            });
-            onCreated?.();
-            onClose();
-        } catch (err) {
-            setErrors({ submit: err instanceof Error ? err.message : 'Failed to create sprint.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Create Sprint" onClick={onClose}>
-            <div className="bl-modal" onClick={e => e.stopPropagation()}>
-                <div className="bl-modal-header">
-                    <div>
-                        <p className="bl-modal-eyebrow">New Sprint</p>
-                        <h2 className="bl-modal-title">Create Sprint</h2>
-                    </div>
-                    <button className="bl-modal-close" onClick={onClose} aria-label="Close">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                    </button>
-                </div>
-
-                <div className="bl-modal-body">
-                    {errors.submit && <div className="form-error" style={{ marginBottom: 14 }}>{errors.submit}</div>}
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="cs-name">
-                                Sprint Name <span className="bl-required">*</span>
-                            </label>
-                            <TooltipIcon text="A clear name for this sprint, e.g. 'Sprint 3 – Auth & Boards'." />
-                        </div>
-                        <input
-                            id="cs-name"
-                            className={`input${errors.sprintName ? ' input--error' : ''}`}
-                            placeholder="e.g. Sprint 3 – Auth & Boards"
-                            value={sprintName}
-                            maxLength={100}
-                            disabled={loading}
-                            onChange={e => setSprintName(e.target.value)}
-                        />
-                        <FieldError message={errors.sprintName} />
-                    </div>
-
-                    <div className="bl-field">
-                        <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="cs-goal">
-                                Sprint Goal <span className="bl-required">*</span>
-                            </label>
-                            <TooltipIcon text="What should the team achieve by the end of this sprint? Required by the server (max 255 characters)." />
-                        </div>
-                        <textarea
-                            id="cs-goal"
-                            className={`input input--textarea${errors.goal ? ' input--error' : ''}`}
-                            placeholder="What will the team deliver this sprint?"
-                            value={goal}
-                            maxLength={255}
-                            rows={3}
-                            disabled={loading}
-                            onChange={e => setGoal(e.target.value)}
-                        />
-                        <FieldError message={errors.goal} />
-                    </div>
-
-                    <div className="bl-field-row">
-                        <div className="bl-field">
-                            <div className="bl-field-label-row">
-                                <label className="bl-field-label" htmlFor="cs-start">
-                                    Start Date <span className="bl-required">*</span>
-                                </label>
-                                <TooltipIcon text="Sprint start date (required)." />
-                            </div>
-                            <input
-                                id="cs-start"
-                                type="date"
-                                className={`input${errors.startDate ? ' input--error' : ''}`}
-                                value={startDate}
-                                disabled={loading}
-                                onChange={e => setStartDate(e.target.value)}
-                            />
-                            <FieldError message={errors.startDate} />
-                        </div>
-                        <div className="bl-field">
-                            <div className="bl-field-label-row">
-                                <label className="bl-field-label" htmlFor="cs-end">
-                                    End Date <span className="bl-required">*</span>
-                                </label>
-                                <TooltipIcon text="Sprint end date (required). Must be on or after the start date." />
-                            </div>
-                            <input
-                                id="cs-end"
-                                type="date"
-                                className={`input${errors.endDate ? ' input--error' : ''}`}
-                                value={endDate}
-                                disabled={loading}
-                                onChange={e => setEndDate(e.target.value)}
-                            />
-                            <FieldError message={errors.endDate} />
-                        </div>
-                    </div>
-                    {errors.managedBy ? <div className="form-error">{errors.managedBy}</div> : null}
-                </div>
-
-                <div className="bl-modal-footer">
-                    <button className="btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
-                    <button className="btn-primary" onClick={handleSubmit} disabled={loading} aria-busy={loading}>
-                        {loading ? <><span className="btn-spinner" />Creating…</> : 'Create Sprint'}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─────────────────────────────────────────────
-// WORK ITEM DETAIL MODAL
-// ─────────────────────────────────────────────
-function WorkItemDetailModal({ item, onClose }: { item: AgendaWorkItem; onClose: () => void }) {
-    const [commentText, setCommentText] = useState('');
-    const [commentLoading, setCommentLoading] = useState(false);
-    const [commentError, setCommentError] = useState('');
-
-    const handleAddComment = async () => {
-        if (!commentText.trim()) return;
-        setCommentLoading(true);
-        setCommentError('');
-        try {
-            await apiClient.post(`/api/work-items/${item.workItemID}/comments`, { text: commentText.trim() });
-            setCommentText('');
-        } catch (err) {
-            setCommentError(err instanceof Error ? err.message : 'Failed to add comment.');
-        } finally {
-            setCommentLoading(false);
-        }
-    };
-
-    const priorityCls = priorityAccentClass(item.priority);
-
-    return (
-        <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Work Item Details" onClick={onClose}>
-            <div className="bl-modal bl-modal--wide" onClick={e => e.stopPropagation()}>
-                <div className="bl-modal-header">
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                            <span className={`wi-type-badge wi-type-badge--${(item.typeName ?? 'task').toLowerCase()}`}>
-                                {item.typeName ?? 'Task'}
-                            </span>
-                            <span className={`wi-priority-badge ${priorityCls}`}>
-                                {item.priority ?? '—'}
-                            </span>
-                            <span className="wi-status-badge">{item.status}</span>
-                        </div>
-                        <h2 className="bl-modal-title" style={{ fontSize: '1rem' }}>{item.title}</h2>
-                    </div>
-                    <button className="bl-modal-close" onClick={onClose} aria-label="Close">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                    </button>
-                </div>
-
-                <div className="bl-modal-body">
-                    {/* Spec grid */}
-                    <div className="wi-spec-grid">
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Work Item ID</span>
-                            <span className="wi-spec-value">#{item.workItemID}</span>
-                        </div>
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Type</span>
-                            <span className="wi-spec-value">{item.typeName ?? '—'}</span>
-                        </div>
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Priority</span>
-                            <span className={`wi-spec-value wi-spec-priority ${priorityCls}`}>{item.priority ?? '—'}</span>
-                        </div>
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Status</span>
-                            <span className="wi-spec-value">{item.status}</span>
-                        </div>
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Assignee</span>
-                            <span className="wi-spec-value">{item.assignedUserID ? `User #${item.assignedUserID}` : 'Unassigned'}</span>
-                        </div>
-                        <div className="wi-spec-item">
-                            <span className="wi-spec-label">Sprint</span>
-                            <span className="wi-spec-value">{item.sprintID ? `Sprint #${item.sprintID}` : 'Backlog'}</span>
-                        </div>
-                        {item.parentWorkItemID != null && (
-                            <div className="wi-spec-item">
-                                <span className="wi-spec-label">Parent</span>
-                                <span className="wi-spec-value">#{item.parentWorkItemID}</span>
-                            </div>
-                        )}
-                        {item.epicID != null && (
-                            <div className="wi-spec-item">
-                                <span className="wi-spec-label">Epic</span>
-                                <span className="wi-spec-value">#{item.epicID}</span>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Description */}
-                    {item.description && (
-                        <div className="wi-detail-section">
-                            <h3 className="wi-detail-section-title">Description</h3>
-                            <p className="wi-detail-desc">{item.description}</p>
-                        </div>
-                    )}
-
-                    {/* Comments */}
-                    <div className="wi-detail-section">
-                        <h3 className="wi-detail-section-title">Comments</h3>
-
-                        {commentError && <div className="form-error" style={{ marginBottom: 10 }}>{commentError}</div>}
-
-                        {/* Comment list placeholder — real data would come from API */}
-                        <div className="wi-comment-list">
-                            <div className="wi-comment-empty">No comments yet. Be the first to add one.</div>
-                        </div>
-
-                        {/* Add comment */}
-                        <div className="wi-comment-compose">
-                            <textarea
-                                className="input input--textarea"
-                                placeholder="Add a comment…"
-                                value={commentText}
-                                rows={3}
-                                disabled={commentLoading}
-                                onChange={e => setCommentText(e.target.value)}
-                            />
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                                <button
-                                    className="btn-primary"
-                                    onClick={handleAddComment}
-                                    disabled={commentLoading || !commentText.trim()}
-                                    aria-busy={commentLoading}
-                                >
-                                    {commentLoading ? <><span className="btn-spinner" />Posting…</> : 'Post Comment'}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="bl-modal-footer">
-                    <button className="btn-ghost" onClick={onClose}>Close</button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─────────────────────────────────────────────
-// ADD ITEM DROPDOWN MENU
-// ─────────────────────────────────────────────
-function AddItemMenu({ onSelect, onClose }: { onSelect: (t: AddItemTarget) => void; onClose: () => void }) {
-    const ref = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        const handler = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-        };
-        window.addEventListener('mousedown', handler);
-        return () => window.removeEventListener('mousedown', handler);
-    }, [onClose]);
-
-    return (
-        <div ref={ref} className="add-item-menu" role="menu" aria-label="Add item options">
-            <button className="add-item-option" role="menuitem" onClick={() => onSelect('epic')}>
-                <span className="add-item-icon add-item-icon--epic">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="12" height="12" rx="2.5" stroke="currentColor" strokeWidth="1.3" /><path d="M4 7h6M4 4.5h4M4 9.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
-                </span>
-                <span>
-                    <span className="add-item-option-title">Create New Epic</span>
-                    <span className="add-item-option-sub">Group related stories under a theme</span>
-                </span>
-            </button>
-            <button className="add-item-option" role="menuitem" onClick={() => onSelect('workitem')}>
-                <span className="add-item-icon add-item-icon--wi">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7h8M3 4.5h8M3 9.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
-                </span>
-                <span>
-                    <span className="add-item-option-title">Create New Work Item</span>
-                    <span className="add-item-option-sub">Story or task for the backlog</span>
-                </span>
-            </button>
-            <button className="add-item-option" role="menuitem" onClick={() => onSelect('sprint')}>
-                <span className="add-item-icon add-item-icon--sprint">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.3" /><path d="M7 4.5v2.8l1.8 1.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
-                </span>
-                <span>
-                    <span className="add-item-option-title">Create New Sprint</span>
-                    <span className="add-item-option-sub">Plan an iteration for the team</span>
-                </span>
-            </button>
-        </div>
-    );
-}
 
 // ─────────────────────────────────────────────
 // MAIN PAGE
@@ -766,10 +155,20 @@ export default function BacklogsPage() {
     const [backlogError, setBacklogError] = useState('');
     const [backlogTitleSearch, setBacklogTitleSearch] = useState('');
     const [backlogType, setBacklogType] = useState<'All' | 'Story' | 'Task'>('All');
-    const [backlogPriority, setBacklogPriority] = useState<'All' | 'Low' | 'Medium' | 'High' | 'Critical'>('All');
+    const [backlogPriority, setBacklogPriority] = useState<'All' | 'Low' | 'Medium' | 'High'>('All');
     const [backlogAssignee, setBacklogAssignee] = useState<'All' | 'Me'>('All');
-    const [backlogSortBy, setBacklogSortBy] = useState<'Title' | 'Priority' | 'Status' | 'WorkItemID'>('WorkItemID');
+    const [backlogSortBy, setBacklogSortBy] = useState<'Title' | 'Priority' | 'Status' | 'WorkItemID' | 'DueDate'>('WorkItemID');
     const [backlogSortDirection, setBacklogSortDirection] = useState<'asc' | 'desc'>('desc');
+
+    const epicToolbarRef = useRef<HTMLDivElement>(null);
+    const sprintToolbarRef = useRef<HTMLDivElement>(null);
+    const backlogToolbarRef = useRef<HTMLDivElement>(null);
+    const [epicFilterMenuOpen, setEpicFilterMenuOpen] = useState(false);
+    const [epicSortMenuOpen, setEpicSortMenuOpen] = useState(false);
+    const [sprintFilterMenuOpen, setSprintFilterMenuOpen] = useState(false);
+    const [sprintSortMenuOpen, setSprintSortMenuOpen] = useState(false);
+    const [backlogFilterMenuOpen, setBacklogFilterMenuOpen] = useState(false);
+    const [backlogSortMenuOpen, setBacklogSortMenuOpen] = useState(false);
 
     const [dragOverSprintId, setDragOverSprintId] = useState<number | null>(null);
     const [pageStatus, setPageStatus] = useState<StatusState>({ kind: 'none' });
@@ -811,6 +210,39 @@ export default function BacklogsPage() {
         window.addEventListener('pointerdown', onPointerDown);
         return () => window.removeEventListener('pointerdown', onPointerDown);
     }, [sprintMenuAnchor]);
+
+    useEffect(() => {
+        if (!epicFilterMenuOpen && !epicSortMenuOpen) return;
+        const onDown = (e: MouseEvent) => {
+            if (epicToolbarRef.current?.contains(e.target as Node)) return;
+            setEpicFilterMenuOpen(false);
+            setEpicSortMenuOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [epicFilterMenuOpen, epicSortMenuOpen]);
+
+    useEffect(() => {
+        if (!sprintFilterMenuOpen && !sprintSortMenuOpen) return;
+        const onDown = (e: MouseEvent) => {
+            if (sprintToolbarRef.current?.contains(e.target as Node)) return;
+            setSprintFilterMenuOpen(false);
+            setSprintSortMenuOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [sprintFilterMenuOpen, sprintSortMenuOpen]);
+
+    useEffect(() => {
+        if (!backlogFilterMenuOpen && !backlogSortMenuOpen) return;
+        const onDown = (e: MouseEvent) => {
+            if (backlogToolbarRef.current?.contains(e.target as Node)) return;
+            setBacklogFilterMenuOpen(false);
+            setBacklogSortMenuOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [backlogFilterMenuOpen, backlogSortMenuOpen]);
 
     // ── EPICS ──────────────────────────────────
     const loadEpics = useCallback(async () => {
@@ -909,29 +341,57 @@ export default function BacklogsPage() {
         if (refreshTimerRef.current) return;
         refreshTimerRef.current = window.setTimeout(async () => {
             refreshTimerRef.current = null;
-            await loadBacklog();
+            await Promise.all([loadBacklog(), loadSprints(), loadEpics()]);
             if (sprintIdHint !== undefined) {
                 if (expandedSprintIds.has(sprintIdHint)) await refreshExpandedSprints([sprintIdHint]);
             } else {
                 await refreshExpandedSprints();
             }
         }, 150);
-    }, [expandedSprintIds, loadBacklog, refreshExpandedSprints]);
+    }, [expandedSprintIds, loadBacklog, loadEpics, loadSprints, refreshExpandedSprints]);
 
     useEffect(() => {
         const conn = getBoardHubConnection();
-        const h = () => scheduleRealtimeRefresh();
+        const onBoardEvent = (payload?: unknown) => {
+            scheduleRealtimeRefresh(sprintIdFromBoardPayload(payload));
+        };
         const start = async () => {
             try { if (conn.state === 'Disconnected') await conn.start(); } catch { /* ignore */ }
-            ['SprintCreated', 'SprintUpdated', 'SprintStarted', 'SprintStopped', 'SprintCompleted', 'SprintDeleted',
-                'WorkItemAssignedToSprint', 'WorkItemRemovedFromSprint', 'WorkItemUpdated', 'WorkItemDeleted'].forEach(ev => conn.on(ev, h));
+            BOARD_HUB_PLANNING_EVENTS.forEach(ev => conn.on(ev, onBoardEvent));
         };
         void start();
         return () => {
-            ['SprintCreated', 'SprintUpdated', 'SprintStarted', 'SprintStopped', 'SprintCompleted', 'SprintDeleted',
-                'WorkItemAssignedToSprint', 'WorkItemRemovedFromSprint', 'WorkItemUpdated', 'WorkItemDeleted'].forEach(ev => conn.off(ev, h));
+            BOARD_HUB_PLANNING_EVENTS.forEach(ev => conn.off(ev, onBoardEvent));
         };
     }, [scheduleRealtimeRefresh]);
+
+    useEffect(() => {
+        if (!me) return;
+        const conn = getNotificationHubConnection();
+
+        const onAdminDirectoryChanged = () => {
+            scheduleRealtimeRefresh();
+        };
+
+        const onNotificationReceived = (dto: unknown) => {
+            if (!isPlanningNotificationPayload(dto)) return;
+            scheduleRealtimeRefresh(relatedSprintIdFromNotification(dto));
+        };
+
+        conn.on('AdminDirectoryChanged', onAdminDirectoryChanged);
+        conn.on('NotificationReceived', onNotificationReceived);
+
+        void (async () => {
+            try {
+                if (conn.state === signalR.HubConnectionState.Disconnected) await conn.start();
+            } catch { /* hub optional */ }
+        })();
+
+        return () => {
+            conn.off('AdminDirectoryChanged', onAdminDirectoryChanged);
+            conn.off('NotificationReceived', onNotificationReceived);
+        };
+    }, [me, scheduleRealtimeRefresh]);
 
     const toggleSprintExpanded = useCallback(async (sprintId: number) => {
         const isExpanded = expandedSprintIds.has(sprintId);
@@ -1052,23 +512,24 @@ export default function BacklogsPage() {
     const [assigneeUsers, setAssigneeUsers] = useState<UserLookup[]>([]);
     const [assigneeLoading, setAssigneeLoading] = useState(false);
     const [assigneeError, setAssigneeError] = useState('');
+    const assigneeSearchDebounced = useDebounced(assigneeSearch, 280);
 
     const loadAssigneeUsers = useCallback(async () => {
         if (!assigneePickerOpen || assigneeTargetWorkItemId === null) return;
         setAssigneeLoading(true); setAssigneeError('');
         try {
-            const qs = new URLSearchParams();
-            if (assigneeSearch.trim()) qs.set('search', assigneeSearch.trim());
-            if (me?.teamID != null) qs.set('teamId', String(me.teamID));
-            qs.set('limit', '25');
-            const resp = await apiClient.get<UserLookup[]>(`/api/lookups/users?${qs.toString()}`);
-            setAssigneeUsers(resp ?? []);
+            const resp = await lookupUsers({
+                search: assigneeSearchDebounced,
+                teamId: me?.teamID ?? null,
+                limit: 25,
+            });
+            setAssigneeUsers(resp);
         } catch (err) {
             setAssigneeError(err instanceof Error ? err.message : 'Failed to load users.');
         } finally {
             setAssigneeLoading(false);
         }
-    }, [assigneePickerOpen, assigneeSearch, assigneeTargetWorkItemId, me?.teamID]);
+    }, [assigneePickerOpen, assigneeSearchDebounced, assigneeTargetWorkItemId, me?.teamID]);
     useEffect(() => { if (assigneePickerOpen) void loadAssigneeUsers(); }, [assigneePickerOpen, loadAssigneeUsers]);
 
     const openAssigneePicker = (workItemId: number) => {
@@ -1134,40 +595,93 @@ export default function BacklogsPage() {
 
                 {/* ── EPICS (left column, full height) ───── */}
                 <section className="backlogs-col panel backlogs-epics">
-                    <div className="panel-header">
-                        <div className="panel-title-row">
-                            <div className="panel-title-line">
+                    <div className="panel-header panel-header--toolbar">
+                        <div className="panel-toolbar" ref={epicToolbarRef}>
+                            <div className="panel-toolbar-start">
                                 <span className="panel-title-label">Epics</span>
-                                <span className="panel-title-desc"> - Plan stories and track progress</span>
+                                <TooltipIcon text="Plan stories and track progress across your hierarchy." />
                             </div>
-                        </div>
-                        <div className="panel-controls">
-                            <div className="control">
-                                <label htmlFor="epic-search">Search</label>
-                                <input id="epic-search" className="input" value={epicSearch} onChange={e => setEpicSearch(e.target.value)} placeholder="Title…" />
-                            </div>
-                            <div className="control">
-                                <label htmlFor="epic-sort">Sort</label>
-                                <select id="epic-sort" className="select" value={epicSortBy} onChange={e => setEpicSortBy(e.target.value as '' | 'WorkItemID' | 'Title')}>
-                                    <option value="">Default</option>
-                                    <option value="Title">Title</option>
-                                    <option value="WorkItemID">ID</option>
-                                </select>
-                            </div>
-                            <div className="control">
-                                <label htmlFor="epic-dir">Dir</label>
-                                <select id="epic-dir" className="select" value={epicSortDirection} onChange={e => setEpicSortDirection(e.target.value as '' | 'asc' | 'desc')}>
-                                    <option value="">Default</option>
-                                    <option value="asc">Asc</option>
-                                    <option value="desc">Desc</option>
-                                </select>
-                            </div>
-                            <div className="control">
-                                <label htmlFor="epic-filter">Filter</label>
-                                <select id="epic-filter" className="select" value={epicFilter} onChange={e => setEpicFilter(e.target.value as 'all' | 'inProgress')}>
-                                    <option value="all">All</option>
-                                    <option value="inProgress">In progress</option>
-                                </select>
+                            <input
+                                id="epic-search"
+                                className="input panel-toolbar-search"
+                                value={epicSearch}
+                                onChange={e => setEpicSearch(e.target.value)}
+                                placeholder="Search…"
+                                aria-label="Search epics"
+                            />
+                            <div className="panel-toolbar-icons">
+                                <div className="panel-toolbar-icon-wrap">
+                                    <button
+                                        type="button"
+                                        className={`adm-icon-btn${epicFilterMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                        aria-label="Filter epics"
+                                        title="Filter epics — all or in progress only"
+                                        aria-expanded={epicFilterMenuOpen}
+                                        aria-haspopup="true"
+                                        onClick={() => {
+                                            setEpicSortMenuOpen(false);
+                                            setEpicFilterMenuOpen(v => !v);
+                                        }}
+                                    >
+                                        <IconFilter />
+                                    </button>
+                                    {epicFilterMenuOpen && (
+                                        <div className="panel-toolbar-menu" role="menu">
+                                            <label className="panel-toolbar-menu-label" htmlFor="epic-filter-select">Progress</label>
+                                            <select
+                                                id="epic-filter-select"
+                                                className="select panel-toolbar-menu-select"
+                                                value={epicFilter}
+                                                onChange={e => setEpicFilter(e.target.value as 'all' | 'inProgress')}
+                                            >
+                                                <option value="all">All epics</option>
+                                                <option value="inProgress">In progress</option>
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="panel-toolbar-icon-wrap">
+                                    <button
+                                        type="button"
+                                        className={`adm-icon-btn${epicSortMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                        aria-label="Sort epics"
+                                        title="Sort epics — field and direction"
+                                        aria-expanded={epicSortMenuOpen}
+                                        aria-haspopup="true"
+                                        onClick={() => {
+                                            setEpicFilterMenuOpen(false);
+                                            setEpicSortMenuOpen(v => !v);
+                                        }}
+                                    >
+                                        <IconSort />
+                                    </button>
+                                    {epicSortMenuOpen && (
+                                        <div className="panel-toolbar-menu" role="menu">
+                                            <label className="panel-toolbar-menu-label" htmlFor="epic-sort-select">Sort by</label>
+                                            <select
+                                                id="epic-sort-select"
+                                                className="select panel-toolbar-menu-select"
+                                                value={epicSortBy}
+                                                onChange={e => setEpicSortBy(e.target.value as '' | 'WorkItemID' | 'Title')}
+                                            >
+                                                <option value="">Default</option>
+                                                <option value="Title">Title</option>
+                                                <option value="WorkItemID">ID</option>
+                                            </select>
+                                            <label className="panel-toolbar-menu-label" htmlFor="epic-dir-select">Direction</label>
+                                            <select
+                                                id="epic-dir-select"
+                                                className="select panel-toolbar-menu-select"
+                                                value={epicSortDirection}
+                                                onChange={e => setEpicSortDirection(e.target.value as '' | 'asc' | 'desc')}
+                                            >
+                                                <option value="">Default</option>
+                                                <option value="asc">Ascending</option>
+                                                <option value="desc">Descending</option>
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1191,15 +705,29 @@ export default function BacklogsPage() {
                                     >
                                         <div className="epic-card-title">{e.epicTitle}</div>
                                         <div className="epic-card-progress">
-                                            <div className="epic-prog-bar">
+                                            <div className="epic-prog-bar" aria-hidden>
                                                 <div
                                                     className="epic-prog-fill"
                                                     style={{ width: e.totalStories > 0 ? `${Math.round(e.completedStories / e.totalStories * 100)}%` : '0%' }}
                                                 />
                                             </div>
-                                            <div className="epic-card-meta">
-                                                <span>Stories {e.completedStories}/{e.totalStories}</span>
-                                                <span>Tasks {e.completedTasks}/{e.totalTasks}</span>
+                                            <div className="epic-card-stats">
+                                                <div className="epic-stat-pill epic-stat-pill--stories">
+                                                    <span className="epic-stat-pill__label">Stories</span>
+                                                    <span className="epic-stat-pill__nums">
+                                                        <span className="epic-stat-pill__done">{e.completedStories}</span>
+                                                        <span className="epic-stat-pill__sep">/</span>
+                                                        <span className="epic-stat-pill__total">{e.totalStories}</span>
+                                                    </span>
+                                                </div>
+                                                <div className="epic-stat-pill epic-stat-pill--tasks">
+                                                    <span className="epic-stat-pill__label">Tasks</span>
+                                                    <span className="epic-stat-pill__nums">
+                                                        <span className="epic-stat-pill__done">{e.completedTasks}</span>
+                                                        <span className="epic-stat-pill__sep">/</span>
+                                                        <span className="epic-stat-pill__total">{e.totalTasks}</span>
+                                                    </span>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -1211,44 +739,97 @@ export default function BacklogsPage() {
 
                 {/* ── SPRINTS (top-right; same width as backlog below) ─ */}
                 <section className="backlogs-col panel backlogs-sprints">
-                        <div className="panel-header">
-                            <div className="panel-title-row">
-                                <div className="panel-title-line">
+                        <div className="panel-header panel-header--toolbar">
+                            <div className="panel-toolbar" ref={sprintToolbarRef}>
+                                <div className="panel-toolbar-start">
                                     <span className="panel-title-label">Sprints</span>
-                                    <span className="panel-title-desc"> - Drag backlog items onto a sprint row to assign</span>
+                                    <TooltipIcon text="Drag backlog items onto a sprint row to assign them." />
                                 </div>
-                            </div>
-                            <div className="panel-controls">
-                                <div className="control" style={{ minWidth: 150 }}>
-                                    <label htmlFor="sprint-search">Search</label>
-                                    <input id="sprint-search" className="input" value={sprintSearch} onChange={e => setSprintSearch(e.target.value)} placeholder="Name or goal…" />
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="sprint-status">Status</label>
-                                    <select id="sprint-status" className="select" value={sprintStatus} onChange={e => setSprintStatus(e.target.value as 'All' | 'Planned' | 'Active' | 'Completed')}>
-                                        <option value="All">All</option>
-                                        <option value="Planned">Planned</option>
-                                        <option value="Active">Active</option>
-                                        <option value="Completed">Completed</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="sprint-sortby">Sort</label>
-                                    <select id="sprint-sortby" className="select" value={sprintSortBy} onChange={e => setSprintSortBy(e.target.value as 'SprintName' | 'StartDate' | 'EndDate' | 'Status' | 'CreatedAt' | 'UpdatedAt')}>
-                                        <option value="SprintName">Name</option>
-                                        <option value="StartDate">Start</option>
-                                        <option value="EndDate">End</option>
-                                        <option value="Status">Status</option>
-                                        <option value="CreatedAt">Created</option>
-                                        <option value="UpdatedAt">Updated</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="sprint-dir">Dir</label>
-                                    <select id="sprint-dir" className="select" value={sprintSortDirection} onChange={e => setSprintSortDirection(e.target.value as 'asc' | 'desc')}>
-                                        <option value="asc">Asc</option>
-                                        <option value="desc">Desc</option>
-                                    </select>
+                                <input
+                                    id="sprint-search"
+                                    className="input panel-toolbar-search"
+                                    value={sprintSearch}
+                                    onChange={e => setSprintSearch(e.target.value)}
+                                    placeholder="Search…"
+                                    aria-label="Search sprints"
+                                />
+                                <div className="panel-toolbar-icons">
+                                    <div className="panel-toolbar-icon-wrap">
+                                        <button
+                                            type="button"
+                                            className={`adm-icon-btn${sprintFilterMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                            aria-label="Filter sprints by status"
+                                            title="Filter sprints by status"
+                                            aria-expanded={sprintFilterMenuOpen}
+                                            aria-haspopup="true"
+                                            onClick={() => {
+                                                setSprintSortMenuOpen(false);
+                                                setSprintFilterMenuOpen(v => !v);
+                                            }}
+                                        >
+                                            <IconFilter />
+                                        </button>
+                                        {sprintFilterMenuOpen && (
+                                            <div className="panel-toolbar-menu" role="menu">
+                                                <label className="panel-toolbar-menu-label" htmlFor="sprint-status-select">Status</label>
+                                                <select
+                                                    id="sprint-status-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={sprintStatus}
+                                                    onChange={e => setSprintStatus(e.target.value as 'All' | 'Planned' | 'Active' | 'Completed')}
+                                                >
+                                                    <option value="All">All</option>
+                                                    <option value="Planned">Planned</option>
+                                                    <option value="Active">Active</option>
+                                                    <option value="Completed">Completed</option>
+                                                </select>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="panel-toolbar-icon-wrap">
+                                        <button
+                                            type="button"
+                                            className={`adm-icon-btn${sprintSortMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                            aria-label="Sort sprints"
+                                            title="Sort sprints — field and direction"
+                                            aria-expanded={sprintSortMenuOpen}
+                                            aria-haspopup="true"
+                                            onClick={() => {
+                                                setSprintFilterMenuOpen(false);
+                                                setSprintSortMenuOpen(v => !v);
+                                            }}
+                                        >
+                                            <IconSort />
+                                        </button>
+                                        {sprintSortMenuOpen && (
+                                            <div className="panel-toolbar-menu" role="menu">
+                                                <label className="panel-toolbar-menu-label" htmlFor="sprint-sortby-select">Sort by</label>
+                                                <select
+                                                    id="sprint-sortby-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={sprintSortBy}
+                                                    onChange={e => setSprintSortBy(e.target.value as 'SprintName' | 'StartDate' | 'EndDate' | 'Status' | 'CreatedAt' | 'UpdatedAt')}
+                                                >
+                                                    <option value="SprintName">Name</option>
+                                                    <option value="StartDate">Start date</option>
+                                                    <option value="EndDate">End date</option>
+                                                    <option value="Status">Status</option>
+                                                    <option value="CreatedAt">Created</option>
+                                                    <option value="UpdatedAt">Updated</option>
+                                                </select>
+                                                <label className="panel-toolbar-menu-label" htmlFor="sprint-dir-select">Direction</label>
+                                                <select
+                                                    id="sprint-dir-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={sprintSortDirection}
+                                                    onChange={e => setSprintSortDirection(e.target.value as 'asc' | 'desc')}
+                                                >
+                                                    <option value="asc">Ascending</option>
+                                                    <option value="desc">Descending</option>
+                                                </select>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1391,58 +972,117 @@ export default function BacklogsPage() {
 
                 {/* ── BACKLOG (bottom-right) ────────────── */}
                 <section className="backlogs-col panel backlogs-backlog">
-                        <div className="panel-header">
-                            <div className="panel-title-row">
-                                <div className="panel-title-line">
+                        <div className="panel-header panel-header--toolbar">
+                            <div className="panel-toolbar" ref={backlogToolbarRef}>
+                                <div className="panel-toolbar-start">
                                     <span className="panel-title-label">Backlog</span>
-                                    <span className="panel-title-desc"> - Stories and tasks ready for sprint planning - drag to assign.</span>
+                                    <TooltipIcon text="Stories and tasks ready for sprint planning. Drag a row onto a sprint to assign." />
                                 </div>
-                            </div>
-                            <div className="panel-controls">
-                                <div className="control" style={{ minWidth: 160 }}>
-                                    <label htmlFor="bl-search">Search</label>
-                                    <input id="bl-search" className="input" value={backlogTitleSearch} onChange={e => setBacklogTitleSearch(e.target.value)} placeholder="Title…" />
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="bl-type">Type</label>
-                                    <select id="bl-type" className="select" value={backlogType} onChange={e => setBacklogType(e.target.value as 'All' | 'Story' | 'Task')}>
-                                        <option value="All">All</option>
-                                        <option value="Story">Stories</option>
-                                        <option value="Task">Tasks</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="bl-priority">Priority</label>
-                                    <select id="bl-priority" className="select" value={backlogPriority} onChange={e => setBacklogPriority(e.target.value as 'All' | 'Low' | 'Medium' | 'High' | 'Critical')}>
-                                        <option value="All">All</option>
-                                        <option value="Low">Low</option>
-                                        <option value="Medium">Medium</option>
-                                        <option value="High">High</option>
-                                        <option value="Critical">Critical</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="bl-assignee">Assignee</label>
-                                    <select id="bl-assignee" className="select" value={backlogAssignee} onChange={e => setBacklogAssignee(e.target.value as 'All' | 'Me')}>
-                                        <option value="All">Any</option>
-                                        <option value="Me">Me</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="bl-sortby">Sort</label>
-                                    <select id="bl-sortby" className="select" value={backlogSortBy} onChange={e => setBacklogSortBy(e.target.value as 'Title' | 'Priority' | 'Status' | 'WorkItemID')}>
-                                        <option value="WorkItemID">ID</option>
-                                        <option value="Title">Title</option>
-                                        <option value="Priority">Priority</option>
-                                        <option value="Status">Status</option>
-                                    </select>
-                                </div>
-                                <div className="control">
-                                    <label htmlFor="bl-dir">Dir</label>
-                                    <select id="bl-dir" className="select" value={backlogSortDirection} onChange={e => setBacklogSortDirection(e.target.value as 'asc' | 'desc')}>
-                                        <option value="asc">Asc</option>
-                                        <option value="desc">Desc</option>
-                                    </select>
+                                <input
+                                    id="bl-search"
+                                    className="input panel-toolbar-search"
+                                    value={backlogTitleSearch}
+                                    onChange={e => setBacklogTitleSearch(e.target.value)}
+                                    placeholder="Search…"
+                                    aria-label="Search backlog"
+                                />
+                                <div className="panel-toolbar-icons">
+                                    <div className="panel-toolbar-icon-wrap">
+                                        <button
+                                            type="button"
+                                            className={`adm-icon-btn${backlogFilterMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                            aria-label="Filter backlog"
+                                            title="Filter backlog — type, priority, assignee"
+                                            aria-expanded={backlogFilterMenuOpen}
+                                            aria-haspopup="true"
+                                            onClick={() => {
+                                                setBacklogSortMenuOpen(false);
+                                                setBacklogFilterMenuOpen(v => !v);
+                                            }}
+                                        >
+                                            <IconFilter />
+                                        </button>
+                                        {backlogFilterMenuOpen && (
+                                            <div className="panel-toolbar-menu panel-toolbar-menu--wide" role="menu">
+                                                <label className="panel-toolbar-menu-label" htmlFor="bl-type-select">Type</label>
+                                                <select
+                                                    id="bl-type-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={backlogType}
+                                                    onChange={e => setBacklogType(e.target.value as 'All' | 'Story' | 'Task')}
+                                                >
+                                                    <option value="All">All</option>
+                                                    <option value="Story">Stories</option>
+                                                    <option value="Task">Tasks</option>
+                                                </select>
+                                                <label className="panel-toolbar-menu-label" htmlFor="bl-priority-select">Priority</label>
+                                                <select
+                                                    id="bl-priority-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={backlogPriority}
+                                                    onChange={e => setBacklogPriority(e.target.value as 'All' | 'Low' | 'Medium' | 'High')}
+                                                >
+                                                    <option value="All">All</option>
+                                                    <option value="Low">Low</option>
+                                                    <option value="Medium">Medium</option>
+                                                    <option value="High">High</option>
+                                                </select>
+                                                <label className="panel-toolbar-menu-label" htmlFor="bl-assignee-select">Assignee</label>
+                                                <select
+                                                    id="bl-assignee-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={backlogAssignee}
+                                                    onChange={e => setBacklogAssignee(e.target.value as 'All' | 'Me')}
+                                                >
+                                                    <option value="All">Anyone</option>
+                                                    <option value="Me">Assigned to me</option>
+                                                </select>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="panel-toolbar-icon-wrap">
+                                        <button
+                                            type="button"
+                                            className={`adm-icon-btn${backlogSortMenuOpen ? ' panel-toolbar-icon-btn--active' : ''}`}
+                                            aria-label="Sort backlog"
+                                            title="Sort backlog — field and direction"
+                                            aria-expanded={backlogSortMenuOpen}
+                                            aria-haspopup="true"
+                                            onClick={() => {
+                                                setBacklogFilterMenuOpen(false);
+                                                setBacklogSortMenuOpen(v => !v);
+                                            }}
+                                        >
+                                            <IconSort />
+                                        </button>
+                                        {backlogSortMenuOpen && (
+                                            <div className="panel-toolbar-menu" role="menu">
+                                                <label className="panel-toolbar-menu-label" htmlFor="bl-sortby-select">Sort by</label>
+                                                <select
+                                                    id="bl-sortby-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={backlogSortBy}
+                                                    onChange={e => setBacklogSortBy(e.target.value as 'Title' | 'Priority' | 'Status' | 'WorkItemID' | 'DueDate')}
+                                                >
+                                                    <option value="WorkItemID">ID</option>
+                                                    <option value="Title">Title</option>
+                                                    <option value="Priority">Priority</option>
+                                                    <option value="Status">Status</option>
+                                                    <option value="DueDate">Due Date</option>
+                                                </select>
+                                                <label className="panel-toolbar-menu-label" htmlFor="bl-dir-select">Direction</label>
+                                                <select
+                                                    id="bl-dir-select"
+                                                    className="select panel-toolbar-menu-select"
+                                                    value={backlogSortDirection}
+                                                    onChange={e => setBacklogSortDirection(e.target.value as 'asc' | 'desc')}
+                                                >
+                                                    <option value="asc">Ascending</option>
+                                                    <option value="desc">Descending</option>
+                                                </select>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1460,6 +1100,7 @@ export default function BacklogsPage() {
                                         <div className="bth-type">Type</div>
                                         <div className="bth-priority">Priority</div>
                                         <div className="bth-status">Status</div>
+                                        <div className="bth-duedate">Due date</div>
                                     </div>
 
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1597,8 +1238,8 @@ export default function BacklogsPage() {
                         void loadSprints();
                     }}
                     onCreated={() => showStatus({ kind: 'success', message: 'Sprint created.' })}
-                    managedByUserId={me?.userID ?? null}
-                    teamID={me?.teamID ?? null}
+                    defaultManagedByUserId={me?.userID ?? null}
+                    defaultManagerDisplayName={me?.fullName ?? ''}
                 />
             )}
 
@@ -1607,139 +1248,50 @@ export default function BacklogsPage() {
 
             {/* Delete confirmation */}
             {deleteConfirmSprintId !== null && (
-                <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Confirm Delete" onClick={() => setDeleteConfirmSprintId(null)}>
-                    <div className="bl-modal bl-modal--narrow" onClick={e => e.stopPropagation()}>
-                        <div className="bl-modal-header">
-                            <div>
-                                <p className="bl-modal-eyebrow">Destructive Action</p>
-                                <h2 className="bl-modal-title">Delete Sprint?</h2>
-                            </div>
-                        </div>
-                        <div className="bl-modal-body">
-                            <p style={{ fontSize: '0.875rem', color: 'var(--page-sub-color)', lineHeight: 1.6 }}>
-                                This will permanently delete the sprint and cannot be undone. Work items will be returned to the backlog.
-                            </p>
-                        </div>
-                        <div className="bl-modal-footer">
-                            <button className="btn-ghost" onClick={() => setDeleteConfirmSprintId(null)}>Cancel</button>
-                            <button className="btn-danger" onClick={() => void handleSprintDelete(deleteConfirmSprintId)}>Delete Sprint</button>
-                        </div>
-                    </div>
-                </div>
+                <DeleteSprintConfirmModal
+                    onClose={() => setDeleteConfirmSprintId(null)}
+                    onConfirm={() => {
+                        const id = deleteConfirmSprintId;
+                        if (id == null) return;
+                        void handleSprintDelete(id);
+                    }}
+                />
             )}
 
             {/* Manage sprint modal */}
             {manageOpen && manageSprintId !== null && (
-                <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Manage Sprint" onClick={resetManage}>
-                    <div className="bl-modal" onClick={e => e.stopPropagation()}>
-                        <div className="bl-modal-header">
-                            <div>
-                                <p className="bl-modal-eyebrow">Sprint Settings</p>
-                                <h2 className="bl-modal-title">Manage Sprint</h2>
-                            </div>
-                            <button className="bl-modal-close" onClick={resetManage} aria-label="Close">
-                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                            </button>
-                        </div>
-                        <div className="bl-modal-body">
-                            {manageError && <div className="form-error" style={{ marginBottom: 14 }}>{manageError}</div>}
-                            <div className="bl-field">
-                                <div className="bl-field-label-row">
-                                    <label className="bl-field-label" htmlFor="ms-name">Sprint Name</label>
-                                    <TooltipIcon text="The display name for this sprint." />
-                                </div>
-                                <input id="ms-name" className="input" value={manageSprintName} onChange={e => setManageSprintName(e.target.value)} disabled={manageLoading} />
-                            </div>
-                            <div className="bl-field">
-                                <div className="bl-field-label-row">
-                                    <label className="bl-field-label" htmlFor="ms-goal">Goal</label>
-                                    <TooltipIcon text="What should the team achieve by the end of this sprint?" />
-                                </div>
-                                <textarea id="ms-goal" className="input input--textarea" value={manageGoal} onChange={e => setManageGoal(e.target.value)} disabled={manageLoading} rows={3} />
-                            </div>
-                            <div className="bl-field-row">
-                                <div className="bl-field">
-                                    <div className="bl-field-label-row">
-                                        <label className="bl-field-label" htmlFor="ms-start">Start Date</label>
-                                    </div>
-                                    <input id="ms-start" className="input" type="date" value={manageStartDate} onChange={e => setManageStartDate(e.target.value)} disabled={manageLoading} />
-                                </div>
-                                <div className="bl-field">
-                                    <div className="bl-field-label-row">
-                                        <label className="bl-field-label" htmlFor="ms-end">End Date</label>
-                                    </div>
-                                    <input id="ms-end" className="input" type="date" value={manageEndDate} onChange={e => setManageEndDate(e.target.value)} disabled={manageLoading} />
-                                </div>
-                            </div>
-                            <div className="bl-field-row">
-                                <div className="bl-field">
-                                    <div className="bl-field-label-row">
-                                        <label className="bl-field-label" htmlFor="ms-managedby">Managed By (User ID)</label>
-                                        <TooltipIcon text="The user responsible for this sprint." />
-                                    </div>
-                                    <input id="ms-managedby" className="input" value={manageManagedBy ?? ''} onChange={e => setManageManagedBy(e.target.value ? Number(e.target.value) : null)} disabled={manageLoading || !(me && isElevatedWorkspaceRole(me))} />
-                                </div>
-                                <div className="bl-field">
-                                    <div className="bl-field-label-row">
-                                        <label className="bl-field-label" htmlFor="ms-team">Team ID</label>
-                                        <TooltipIcon text="The team assigned to this sprint." />
-                                    </div>
-                                    <input id="ms-team" className="input" value={manageTeamId ?? ''} onChange={e => setManageTeamId(e.target.value ? Number(e.target.value) : null)} disabled={manageLoading} />
-                                </div>
-                            </div>
-                        </div>
-                        <div className="bl-modal-footer">
-                            <button className="btn-ghost" onClick={resetManage} disabled={manageLoading}>Cancel</button>
-                            <button className="btn-primary" onClick={() => void saveManage()} disabled={manageLoading} aria-busy={manageLoading}>
-                                {manageLoading ? <><span className="btn-spinner" />Saving…</> : 'Save Changes'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <ManageSprintModal
+                    onClose={resetManage}
+                    manageSprintName={manageSprintName}
+                    setManageSprintName={setManageSprintName}
+                    manageGoal={manageGoal}
+                    setManageGoal={setManageGoal}
+                    manageStartDate={manageStartDate}
+                    setManageStartDate={setManageStartDate}
+                    manageEndDate={manageEndDate}
+                    setManageEndDate={setManageEndDate}
+                    manageManagedBy={manageManagedBy}
+                    setManageManagedBy={setManageManagedBy}
+                    manageTeamId={manageTeamId}
+                    setManageTeamId={setManageTeamId}
+                    manageLoading={manageLoading}
+                    manageError={manageError}
+                    onSave={() => void saveManage()}
+                    me={me}
+                />
             )}
 
             {/* Assignee picker */}
             {assigneePickerOpen && assigneeTargetWorkItemId !== null && (
-                <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Pick Assignee" onMouseDown={e => { if (e.target === e.currentTarget) { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); } }}>
-                    <div className="bl-modal bl-modal--narrow" onClick={e => e.stopPropagation()}>
-                        <div className="bl-modal-header">
-                            <div>
-                                <p className="bl-modal-eyebrow">Team Member</p>
-                                <h2 className="bl-modal-title">Add Assignee</h2>
-                            </div>
-                            <button className="bl-modal-close" onClick={() => { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); }} aria-label="Close">
-                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-                            </button>
-                        </div>
-                        <div className="bl-modal-body">
-                            {assigneeError && <div className="form-error" style={{ marginBottom: 10 }}>{assigneeError}</div>}
-                            <div className="bl-field" style={{ marginBottom: 12 }}>
-                                <label className="bl-field-label" htmlFor="assignee-search">Search team members</label>
-                                <input id="assignee-search" className="input" value={assigneeSearch} onChange={e => setAssigneeSearch(e.target.value)} placeholder="Name or email…" disabled={assigneeLoading} />
-                            </div>
-                            {assigneeLoading ? (
-                                Array.from({ length: 4 }).map((_, i) => <div className="loading-skel" key={i} style={{ marginBottom: 8 }} />)
-                            ) : assigneeUsers.length === 0 ? (
-                                <div className="scroll-empty">No users found.</div>
-                            ) : (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                    {assigneeUsers.map(u => (
-                                        <button key={u.userID} type="button" className="assignee-option" onClick={() => void selectAssignee(u.userID)}>
-                                            <div className="assignee-avatar">{u.displayName.charAt(0).toUpperCase()}</div>
-                                            <div>
-                                                <div className="assignee-name">{u.displayName}</div>
-                                                <div className="assignee-email">{u.emailAddress}</div>
-                                            </div>
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                        <div className="bl-modal-footer">
-                            <button className="btn-ghost" onClick={() => { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); }} disabled={assigneeLoading}>Close</button>
-                        </div>
-                    </div>
-                </div>
+                <AssigneePickerModal
+                    onClose={() => { setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null); }}
+                    assigneeSearch={assigneeSearch}
+                    setAssigneeSearch={setAssigneeSearch}
+                    assigneeUsers={assigneeUsers}
+                    assigneeLoading={assigneeLoading}
+                    assigneeError={assigneeError}
+                    onSelectAssignee={id => void selectAssignee(id)}
+                />
             )}
         </div>
     );
@@ -1790,6 +1342,17 @@ function BacklogItemRow({
             </div>
             <div className="bir-status">
                 <span className="wi-status-chip">{item.status}</span>
+            </div>
+            <div className="bir-duedate">
+                <span className="wi-duedate-text">
+                    {item.dueDate
+                        ? new Date(item.dueDate).toLocaleDateString(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                        })
+                        : '—'}
+                </span>
             </div>
         </div>
     );
@@ -1871,4 +1434,4 @@ function SprintWorkItemsList(props: {
             {orphanTasks.map(t => renderItem(t))}
         </div>
     );
-}
+} 

@@ -23,6 +23,7 @@ public sealed class AgendaWorkItemDto
     public string TypeName { get; set; } = "";
     public string Status { get; set; } = "";
     public string? Priority { get; set; }
+    public DateOnly? DueDate { get; set; }
     public int? ParentWorkItemID { get; set; }
     public int? SprintID { get; set; }
     public int? TeamID { get; set; }

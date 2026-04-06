@@ -28,4 +28,7 @@ public sealed class CreateWorkItemRequestDto
 
     // Optional
     public int? AssignedUserID { get; set; }
+
+    // Optional due date for the work item
+    public DateOnly? DueDate { get; set; }
 }

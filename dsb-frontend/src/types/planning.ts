@@ -1,4 +1,4 @@
-export type Priority = 'Low' | 'Medium' | 'High' | 'Critical';
+export type Priority = 'Low' | 'Medium' | 'High';
 
 // Mirrors DigitalScrumBoard1.DTOs.WorkItems.EpicTileDto
 export type EpicTile = {
@@ -26,10 +26,13 @@ export type AgendaWorkItem = {
     typeName: string;
     status: string;
     priority: string | null;
+    dueDate: string | null;
     parentWorkItemID: number | null;
     sprintID: number | null;
     teamID: number | null;
     assignedUserID: number | null;
+    epicID?: number | null;
+    description?: string | null;
 };
 
 // Mirrors DigitalScrumBoard1.DTOs.WorkItems.WorkItemDetailsResponseDto

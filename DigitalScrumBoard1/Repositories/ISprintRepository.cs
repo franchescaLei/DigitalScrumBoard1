@@ -7,6 +7,11 @@ public interface ISprintRepository
     Task<bool> UserExistsAsync(int userId, CancellationToken ct);
     Task<bool> TeamExistsAsync(int teamId, CancellationToken ct);
 
+    /// <summary>Active (non-disabled) users assigned to the team.</summary>
+    Task<List<int>> GetActiveUserIdsForTeamAsync(int teamId, CancellationToken ct);
+
+    Task<string?> GetTeamNameAsync(int teamId, CancellationToken ct);
+
     Task<List<Sprint>> GetAllAsync(CancellationToken ct);
     Task<Sprint?> GetByIdAsync(int sprintId, CancellationToken ct);
     Task<Sprint?> GetTrackedByIdAsync(int sprintId, CancellationToken ct);

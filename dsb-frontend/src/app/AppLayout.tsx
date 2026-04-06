@@ -1,8 +1,19 @@
+import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import Header from "../components/Header";
 import NavMenu from "../components/NavMenu";
+import { primeNotificationAudioContext } from "../utils/notificationSound";
 
 export default function AppLayout() {
+    useEffect(() => {
+        const unlock = () => {
+            primeNotificationAudioContext();
+            document.removeEventListener("pointerdown", unlock);
+        };
+        document.addEventListener("pointerdown", unlock, { passive: true });
+        return () => document.removeEventListener("pointerdown", unlock);
+    }, []);
+
     return (
         <div className="app-shell">
             <Header />
