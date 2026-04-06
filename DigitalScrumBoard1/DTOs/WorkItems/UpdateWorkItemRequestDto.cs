@@ -18,4 +18,6 @@ public sealed class UpdateWorkItemRequestDto
     public int? TeamID { get; set; }
 
     public int? AssignedUserID { get; set; }
+
+    public DateOnly? DueDate { get; set; }
 }

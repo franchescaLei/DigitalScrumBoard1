@@ -49,6 +49,7 @@ import * as signalR from '@microsoft/signalr';
 import '../styles/admin.css';
 import '../styles/backlogs.css';
 import '../styles/backlogs-story-pills.css';
+import '../styles/work-item-modal.css';
 
 /** Sprint id from BoardHub payloads (camelCase / PascalCase). */
 function sprintIdFromBoardPayload(payload: unknown): number | undefined {
@@ -1244,7 +1245,19 @@ export default function BacklogsPage() {
             )}
 
             {/* Work item detail */}
-            {detailItem && <WorkItemDetailModal item={detailItem} onClose={() => setDetailItem(null)} />}
+            {detailItem && (() => {
+                const isAdminOrSM = me?.roleName === 'Administrator' || me?.roleName === 'Scrum Master' || me?.roleName === 'ScrumMaster';
+                const isOwner = detailItem.assignedUserID === me?.userID;
+                return (
+                    <WorkItemDetailModal
+                        item={detailItem}
+                        onClose={() => setDetailItem(null)}
+                        canManage={isAdminOrSM}
+                        canEdit={isAdminOrSM || isOwner}
+                        currentUserId={me?.userID ?? null}
+                    />
+                );
+            })()}
 
             {/* Delete confirmation */}
             {deleteConfirmSprintId !== null && (

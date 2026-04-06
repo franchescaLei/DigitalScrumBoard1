@@ -266,22 +266,10 @@ public sealed class WorkItemsController : ControllerBase
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
-        int? sprintManagerId = null;
+        // Only admins/scrum masters or the work item's assignee (owner) can comment
         var canComment = CanManageWorkItem(userId.Value, workItem.AssignedUserID);
-
-        if (!canComment && workItem.SprintID.HasValue)
-        {
-            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
-            sprintManagerId = sprint?.ManagedBy;
-            canComment = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
-        }
-        else if (workItem.SprintID.HasValue)
-        {
-            sprintManagerId = await _repo.GetSprintManagerUserIdAsync(workItem.SprintID.Value, ct);
-        }
-
         if (!canComment)
-            return Forbid();
+            return StatusCode(403, new { message = "Only administrators, scrum masters, or the work item's assignee can comment." });
 
         var text = req.CommentText.Trim();
         if (text.Length == 0)
@@ -301,13 +289,19 @@ public sealed class WorkItemsController : ControllerBase
 
         await _repo.AddCommentAsync(comment, ct);
 
-        var relatedUserIds = BuildRelatedUserIds(
-            workItem,
-            sprintManagerId,
-            userId.Value,
-            null);
+        // Only notify assignee and team members (not admins/sprint managers)
+        var notifyUserIds = new HashSet<int>();
+        if (workItem.AssignedUserID.HasValue)
+            notifyUserIds.Add(workItem.AssignedUserID.Value);
+        if (workItem.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+                notifyUserIds.Add(tm);
+        }
+        notifyUserIds.Remove(userId.Value);
 
-        var commentNotifications = relatedUserIds
+        var commentNotifications = notifyUserIds
             .Select(targetUserId => new Notification
             {
                 UserID = targetUserId,
@@ -377,6 +371,93 @@ public sealed class WorkItemsController : ControllerBase
         }
 
         return Ok(created);
+    }
+
+    [HttpPatch("{id:int}/comments/{commentId:int}")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> EditComment(
+        [FromRoute] int id,
+        [FromRoute] int commentId,
+        [FromBody] CreateWorkItemCommentRequestDto req,
+        CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.CommentText))
+            return BadRequest(new { message = "CommentText is required." });
+
+        var userId = TryGetUserId(User);
+        if (userId is null) return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        var comment = await _repo.GetCommentByIdAsync(commentId, ct);
+        if (comment is null) return NotFound(new { message = "Comment not found." });
+        // Only the comment's creator can edit
+        if (comment.CommentedBy != userId.Value)
+            return StatusCode(403, new { message = "Only the comment's author can edit this comment." });
+
+        comment.CommentText = req.CommentText.Trim();
+        comment.UpdatedAt = DateTime.UtcNow;
+        await _repo.SaveChangesAsync(ct);
+
+        var ipEdit = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        await _audit.LogAsync(
+            userId.Value,
+            "WorkItem.Comment.Edit",
+            "WorkItem",
+            comment.WorkItemID,
+            true,
+            $"Edited comment on WorkItemID={comment.WorkItemID}; CommentID={commentId}",
+            ipEdit,
+            ct);
+
+        // Broadcast edit to all connected clients
+        await _hub.Clients.All.SendAsync("WorkItemCommentEdited", new
+        {
+            workItemID = comment.WorkItemID,
+            commentID = comment.CommentID,
+            commentText = comment.CommentText
+        }, ct);
+
+        return Ok(new { message = "Comment updated." });
+    }
+
+    [HttpDelete("{id:int}/comments/{commentId:int}")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<IActionResult> DeleteComment(
+        [FromRoute] int id,
+        [FromRoute] int commentId,
+        CancellationToken ct)
+    {
+        var userId = TryGetUserId(User);
+        if (userId is null) return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        var comment = await _repo.GetCommentByIdAsync(commentId, ct);
+        if (comment is null) return NotFound(new { message = "Comment not found." });
+        // Creator or elevated role can delete
+        if (comment.CommentedBy != userId.Value && !IsElevatedWorkItemRole())
+            return StatusCode(403, new { message = "Only the comment's author or an administrator can delete this comment." });
+
+        comment.IsDeleted = true;
+        comment.UpdatedAt = DateTime.UtcNow;
+        await _repo.SaveChangesAsync(ct);
+
+        var ipDel = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        await _audit.LogAsync(
+            userId.Value,
+            "WorkItem.Comment.Delete",
+            "WorkItem",
+            comment.WorkItemID,
+            true,
+            $"Deleted comment on WorkItemID={comment.WorkItemID}; CommentID={commentId}",
+            ipDel,
+            ct);
+
+        // Broadcast delete to all connected clients
+        await _hub.Clients.All.SendAsync("WorkItemCommentDeleted", new
+        {
+            workItemID = comment.WorkItemID,
+            commentID = comment.CommentID
+        }, ct);
+
+        return Ok(new { message = "Comment deleted." });
     }
 
     [HttpGet("parents")]
@@ -783,7 +864,7 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPatch("{id:int}")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> Patch(
         [FromRoute] int id,
         [FromBody] UpdateWorkItemRequestDto req,
@@ -802,6 +883,7 @@ public sealed class WorkItemsController : ControllerBase
             req.Title is not null ||
             req.Description is not null ||
             req.Priority is not null ||
+            req.DueDate is not null ||
             req.ParentWorkItemID.HasValue ||
             req.TeamID.HasValue ||
             req.AssignedUserID.HasValue;
@@ -828,17 +910,25 @@ public sealed class WorkItemsController : ControllerBase
 
         var isElevated = IsElevatedWorkItemRole();
 
-        int? sprintManagerId = null;
-        var isSprintManager = false;
-
-        if (workItem.SprintID.HasValue)
+        // Check if user is trying to change restricted fields (assignee/team) without elevated role
+        if ((req.AssignedUserID.HasValue || req.TeamID.HasValue) && !isElevated)
         {
-            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
-            sprintManagerId = sprint?.ManagedBy;
-            isSprintManager = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
+            await _audit.LogAsync(
+                userId.Value,
+                "WorkItem.Update",
+                "WorkItem",
+                workItem.WorkItemID,
+                false,
+                $"Unauthorized: non-elevated user attempted to change assignee/team for WorkItemID={workItem.WorkItemID}",
+                ip,
+                ct);
+
+            return StatusCode(403, new { message = "Only administrators and scrum masters can change assignee or team." });
         }
 
-        if (!isElevated && !isSprintManager)
+        // Allow owner (assignee) or elevated role to update
+        var isOwner = workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value == userId.Value;
+        if (!isElevated && !isOwner)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -974,6 +1064,16 @@ public sealed class WorkItemsController : ControllerBase
             }
         }
 
+        if (req.DueDate.HasValue || (workItem.DueDate.HasValue && req.DueDate is not null))
+        {
+            if (workItem.DueDate != req.DueDate)
+            {
+                histories.Add(BuildHistory(workItem.WorkItemID, "DueDate", workItem.DueDate?.ToString(), req.DueDate?.ToString(), userId.Value, now));
+                changedFields.Add($"DueDate:{workItem.DueDate}->{req.DueDate}");
+                workItem.DueDate = req.DueDate;
+            }
+        }
+
         if (changedFields.Count == 0)
         {
             return Ok(new
@@ -988,14 +1088,9 @@ public sealed class WorkItemsController : ControllerBase
         foreach (var history in histories)
             await _repo.AddHistoryAsync(history, ct);
 
-        var relatedUserIds = BuildRelatedUserIds(
-            workItem,
-            sprintManagerId,
-            userId.Value,
-            oldAssignedUserId);
-
         var notifications = new List<Notification>();
 
+        // If assignee changed, notify the new assignee AND the old assignee
         if (oldAssignedUserId != workItem.AssignedUserID && workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
         {
             notifications.Add(new Notification
@@ -1010,18 +1105,60 @@ public sealed class WorkItemsController : ControllerBase
             });
         }
 
-        foreach (var targetUserId in relatedUserIds)
+        // Notify old assignee that they were removed
+        if (oldAssignedUserId.HasValue && oldAssignedUserId.Value != userId.Value && oldAssignedUserId != workItem.AssignedUserID)
         {
             notifications.Add(new Notification
             {
-                UserID = targetUserId,
-                Message = $"Work item '{workItem.Title}' was updated.",
-                NotificationType = "WorkItemUpdated",
+                UserID = oldAssignedUserId.Value,
+                Message = $"You were removed from work item '{workItem.Title}'.",
+                NotificationType = "WorkItemUnassigned",
                 RelatedWorkItemID = workItem.WorkItemID,
                 RelatedSprintID = workItem.SprintID,
                 CreatedAt = now,
                 IsRead = false
             });
+        }
+
+        // Notify the work item's assignee that details changed (if not already notified above)
+        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            var alreadyNotified = notifications.Any(n => n.UserID == workItem.AssignedUserID.Value);
+            if (!alreadyNotified)
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = workItem.AssignedUserID.Value,
+                    Message = $"Work item '{workItem.Title}' was updated.",
+                    NotificationType = "WorkItemUpdated",
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = workItem.SprintID,
+                    CreatedAt = now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // If team changed, notify team members
+        if (workItem.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+            {
+                if (tm != userId.Value && !notifications.Any(n => n.UserID == tm))
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = tm,
+                        Message = $"Work item '{workItem.Title}' was updated.",
+                        NotificationType = "WorkItemUpdated",
+                        RelatedWorkItemID = workItem.WorkItemID,
+                        RelatedSprintID = workItem.SprintID,
+                        CreatedAt = now,
+                        IsRead = false
+                    });
+                }
+            }
         }
 
         var patchNotifications = notifications

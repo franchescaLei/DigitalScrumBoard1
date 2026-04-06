@@ -47,6 +47,8 @@ public interface IWorkItemRepository
     Task AddNotificationsAsync(IEnumerable<Notification> notifications, CancellationToken ct);
 
     Task<List<WorkItemCommentDto>> GetCommentsAsync(int workItemId, CancellationToken ct);
+    Task<WorkItemComment?> GetCommentByIdAsync(int commentId, CancellationToken ct);
+    Task<List<int>> GetUsersByTeamIdAsync(int teamId, CancellationToken ct);
 
     Task AddCommentAsync(WorkItemComment comment, CancellationToken ct);
 

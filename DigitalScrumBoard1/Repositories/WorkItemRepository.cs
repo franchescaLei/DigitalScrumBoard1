@@ -504,6 +504,22 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .ToListAsync(ct);
     }
 
+    public async Task<WorkItemComment?> GetCommentByIdAsync(int commentId, CancellationToken ct)
+    {
+        return await _db.WorkItemComments
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.CommentID == commentId, ct);
+    }
+
+    public async Task<List<int>> GetUsersByTeamIdAsync(int teamId, CancellationToken ct)
+    {
+        return await _db.Users
+            .AsNoTracking()
+            .Where(u => u.TeamID == teamId)
+            .Select(u => u.UserID)
+            .ToListAsync(ct);
+    }
+
     public async Task AddCommentAsync(WorkItemComment comment, CancellationToken ct)
     {
         await _db.WorkItemComments.AddAsync(comment, ct);
