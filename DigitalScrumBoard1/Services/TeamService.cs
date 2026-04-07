@@ -1,3 +1,4 @@
+using DigitalScrumBoard1.Utilities;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
 using DigitalScrumBoard1.Hubs;
@@ -38,7 +39,7 @@ namespace DigitalScrumBoard1.Services
                 TeamName = name,
                 Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTimeHelper.Now
             };
 
             _db.Teams.Add(team);

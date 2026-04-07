@@ -19,6 +19,7 @@ import {
     startSprint,
     stopSprint,
 } from '../api/sprintsApi';
+import { formatDate } from '../utils/dateFormatter';
 import { lookupUsers, type UserLookup } from '../api/lookupsApi';
 import type { AgendaWorkItem, EpicTile, SprintSummary } from '../types/planning';
 import type { UserProfile } from '../types/auth';
@@ -1358,13 +1359,7 @@ function BacklogItemRow({
             </div>
             <div className="bir-duedate">
                 <span className="wi-duedate-text">
-                    {item.dueDate
-                        ? new Date(item.dueDate).toLocaleDateString(undefined, {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                        })
-                        : '—'}
+                    {item.dueDate ? formatDate(item.dueDate) : '—'}
                 </span>
             </div>
         </div>

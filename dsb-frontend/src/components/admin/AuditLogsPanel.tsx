@@ -7,15 +7,7 @@ import {
     type AuditLogQuery,
 } from '../../api/auditLogsApi';
 import { ApiError } from '../../services/apiClient';
-
-function formatTs(iso: string): string {
-    try {
-        const d = new Date(iso);
-        return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-    } catch {
-        return iso;
-    }
-}
+import { formatDateTime } from '../../utils/dateFormatter';
 
 function truncate(s: string, max: number): string {
     if (s.length <= max) return s;
@@ -256,7 +248,7 @@ export function AuditLogsPanel() {
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
                         <thead>
                             <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--divider)' }}>
-                                <th style={{ padding: '8px 10px' }}>Time (UTC stored)</th>
+                                <th style={{ padding: '8px 10px' }}>Time (PHT)</th>
                                 <th style={{ padding: '8px 10px' }}>User</th>
                                 <th style={{ padding: '8px 10px' }}>Action</th>
                                 <th style={{ padding: '8px 10px' }}>OK</th>
@@ -269,7 +261,7 @@ export function AuditLogsPanel() {
                             {rows.map((r) => (
                                 <tr key={r.logID} style={{ borderBottom: '1px solid var(--divider)' }}>
                                     <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                                        {formatTs(r.timestamp)}
+                                        {formatDateTime(r.timestamp)}
                                     </td>
                                     <td style={{ padding: '8px 10px' }}>{r.userID}</td>
                                     <td style={{ padding: '8px 10px' }}>{r.action}</td>

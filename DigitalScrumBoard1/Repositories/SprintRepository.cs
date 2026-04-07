@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -95,7 +96,7 @@ public sealed class SprintRepository : ISprintRepository
             if (sprint is null)
                 return -1;
 
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             var linkedWorkItems = await _db.WorkItems
                 .IgnoreQueryFilters()
@@ -109,6 +110,11 @@ public sealed class SprintRepository : ISprintRepository
                 workItem.SprintID = null;
                 workItem.UpdatedAt = now;
             }
+
+            // Clear existing notification references to this sprint
+            await _db.Notifications
+                .Where(n => n.RelatedSprintID == sprintId)
+                .ExecuteUpdateAsync(s => s.SetProperty(n => n.RelatedSprintID, (int?)null), ct);
 
             _db.Sprints.Remove(sprint);
 
@@ -131,7 +137,7 @@ public sealed class SprintRepository : ISprintRepository
             return;
 
         sprint.Status = "Active";
-        sprint.UpdatedAt = DateTime.UtcNow;
+        sprint.UpdatedAt = DateTimeHelper.Now;
 
         await _db.SaveChangesAsync(ct);
     }
@@ -139,7 +145,7 @@ public sealed class SprintRepository : ISprintRepository
     public async Task StopSprintAsync(Sprint sprint, CancellationToken ct)
     {
         sprint.Status = "Planned";
-        sprint.UpdatedAt = DateTime.UtcNow;
+        sprint.UpdatedAt = DateTimeHelper.Now;
 
         await _db.SaveChangesAsync(ct);
     }
@@ -149,7 +155,7 @@ public sealed class SprintRepository : ISprintRepository
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             foreach (var workItem in sprintWorkItems)
             {
@@ -221,7 +227,7 @@ public sealed class SprintRepository : ISprintRepository
         {
             var items = notifications.ToList();
 
-            sprint.UpdatedAt = DateTime.UtcNow;
+            sprint.UpdatedAt = DateTimeHelper.Now;
 
             if (items.Count > 0)
                 await _db.Notifications.AddRangeAsync(items, ct);

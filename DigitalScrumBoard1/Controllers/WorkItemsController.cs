@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.DTOs.WorkItems;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.DTOs.WorkItems;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Repositories;
@@ -32,13 +33,20 @@ public sealed class WorkItemsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<ActionResult<WorkItemCreatedResponseDto>> Create(
         [FromBody] CreateWorkItemRequestDto req,
         CancellationToken ct)
     {
         if (!ModelState.IsValid)
             return ValidationProblem(ModelState);
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!IsElevatedWorkItemRole())
+            return BadRequest(new { message = "You do not have permission to create work items. Only Administrators and Scrum Masters can create work items." });
 
         var type = NormalizeType(req.Type);
         if (type is null)
@@ -50,10 +58,6 @@ public sealed class WorkItemsController : ControllerBase
         if (title.Length == 0) return BadRequest(new { message = "Title is required." });
         if (desc.Length == 0) return BadRequest(new { message = "Description is required." });
         if (priority is null) return BadRequest(new { message = "Invalid Priority. Allowed: Low, Medium, High, Critical." });
-
-        var userId = TryGetUserId(User);
-        if (userId is null)
-            return Unauthorized(new { message = "Missing/invalid user identity." });
 
         var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
         var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
@@ -132,7 +136,7 @@ public sealed class WorkItemsController : ControllerBase
                 return BadRequest(new { message = "Assigned user not found." });
         }
 
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         var item = new WorkItem
         {
@@ -275,7 +279,7 @@ public sealed class WorkItemsController : ControllerBase
         if (text.Length == 0)
             return BadRequest(new { message = "CommentText cannot be empty." });
 
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         var comment = new WorkItemComment
         {
@@ -394,7 +398,7 @@ public sealed class WorkItemsController : ControllerBase
             return StatusCode(403, new { message = "Only the comment's author can edit this comment." });
 
         comment.CommentText = req.CommentText.Trim();
-        comment.UpdatedAt = DateTime.UtcNow;
+        comment.UpdatedAt = DateTimeHelper.Now;
         await _repo.SaveChangesAsync(ct);
 
         var ipEdit = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -436,7 +440,7 @@ public sealed class WorkItemsController : ControllerBase
             return StatusCode(403, new { message = "Only the comment's author or an administrator can delete this comment." });
 
         comment.IsDeleted = true;
-        comment.UpdatedAt = DateTime.UtcNow;
+        comment.UpdatedAt = DateTimeHelper.Now;
         await _repo.SaveChangesAsync(ct);
 
         var ipDel = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -640,6 +644,10 @@ public sealed class WorkItemsController : ControllerBase
         if (!CanManageSprint(userId.Value, sprint.ManagedBy))
             return Forbid();
 
+        // Validate work item due date is not after sprint end date
+        if (workItem.DueDate.HasValue && sprint.EndDate < workItem.DueDate.Value)
+            return BadRequest(new { message = $"Cannot assign work item to this sprint. The work item's due date ({workItem.DueDate.Value}) is after the sprint's end date ({sprint.EndDate})." });
+
         await _repo.AssignToSprintAsync(workItem, req.SprintID, ct);
 
         if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
@@ -653,7 +661,7 @@ public sealed class WorkItemsController : ControllerBase
                     RelatedSprintID = req.SprintID,
                     NotificationType = "WorkItemAssignedToSprint",
                     Message = $"Work item '{workItem.Title}' was added to sprint '{sprint.SprintName}'.",
-                    CreatedAt = DateTime.UtcNow,
+                    CreatedAt = DateTimeHelper.Now,
                     IsRead = false
                 }
             }, ct);
@@ -668,7 +676,7 @@ public sealed class WorkItemsController : ControllerBase
             assignedUserID = workItem.AssignedUserID,
             sprintID = req.SprintID,
             sprintName = sprint.SprintName,
-            changedAt = DateTime.UtcNow
+            changedAt = DateTimeHelper.Now
         }, ct);
 
         return Ok(new
@@ -746,7 +754,7 @@ public sealed class WorkItemsController : ControllerBase
                     RelatedWorkItemID = workItem.WorkItemID,
                     NotificationType = "WorkItemRemovedFromSprint",
                     Message = $"Work item '{workItem.Title}' was removed from sprint '{sprint.SprintName}'.",
-                    CreatedAt = DateTime.UtcNow,
+                    CreatedAt = DateTimeHelper.Now,
                     IsRead = false
                 }
             }, ct);
@@ -761,7 +769,7 @@ public sealed class WorkItemsController : ControllerBase
                 title = workItem.Title,
                 oldSprintID = oldSprintId.Value,
                 oldSprintName = sprint.SprintName,
-                changedAt = DateTime.UtcNow
+                changedAt = DateTimeHelper.Now
             }, ct);
         }
 
@@ -823,7 +831,7 @@ public sealed class WorkItemsController : ControllerBase
         }
 
         workItem.Status = newStatus;
-        workItem.UpdatedAt = DateTime.UtcNow;
+        workItem.UpdatedAt = DateTimeHelper.Now;
 
         await _repo.SaveChangesAsync(ct);
 
@@ -953,7 +961,7 @@ public sealed class WorkItemsController : ControllerBase
         var histories = new List<WorkItemHistory>();
         var changedFields = new List<string>();
         var oldAssignedUserId = workItem.AssignedUserID;
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         if (req.Title is not null)
         {
@@ -1275,7 +1283,7 @@ public sealed class WorkItemsController : ControllerBase
         if (hasChildren)
             return BadRequest(new { message = "Cannot delete a work item that still has active child work items." });
 
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
         workItem.IsDeleted = true;
         workItem.DeletedAt = now;
         workItem.UpdatedAt = now;

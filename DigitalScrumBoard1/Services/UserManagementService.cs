@@ -1,3 +1,4 @@
+using DigitalScrumBoard1.Utilities;
 using System.Security.Cryptography;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Dtos;
@@ -273,7 +274,7 @@ namespace DigitalScrumBoard1.Services
                 throw new InvalidOperationException("Email address is already in use.");
 
             var temporaryPassword = GenerateTemporaryPassword();
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             var user = new User
             {
@@ -344,8 +345,8 @@ namespace DigitalScrumBoard1.Services
                 return "User account is already disabled.";
 
             user.Disabled = true;
-            user.DisabledAt = DateTime.UtcNow;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.DisabledAt = DateTimeHelper.Now;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -375,7 +376,7 @@ namespace DigitalScrumBoard1.Services
 
             user.Disabled = false;
             user.DisabledAt = null;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -488,7 +489,7 @@ namespace DigitalScrumBoard1.Services
                 };
             }
 
-            user.UpdatedAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -502,7 +503,7 @@ namespace DigitalScrumBoard1.Services
                             UserID = user.UserID,
                             NotificationType = "UserAccessUpdated",
                             Message = $"{string.Join(" and ", notificationParts)}.",
-                            CreatedAt = DateTime.UtcNow,
+                            CreatedAt = DateTimeHelper.Now,
                             IsRead = false
                         }
                     },
@@ -560,7 +561,7 @@ namespace DigitalScrumBoard1.Services
 
             user.PasswordHash = PasswordHasher.Hash(temporaryPassword);
             user.MustChangePassword = true;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -791,7 +792,7 @@ namespace DigitalScrumBoard1.Services
             if (info.ConsecutiveFailures <= 0 || info.LatestFailureUtc is null)
                 return (false, false, TimeSpan.Zero, null);
 
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             if (info.ConsecutiveFailures >= AccountLockoutFailedAttempt)
             {

@@ -43,7 +43,24 @@ const LogoutIcon = () => (
     </svg>
 );
 
-export default function NavMenu() {
+const CollapseIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+const ExpandIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+interface NavMenuProps {
+    isCollapsed: boolean;
+    onToggle: () => void;
+}
+
+export default function NavMenu({ isCollapsed, onToggle }: NavMenuProps) {
     const { user } = useAuth();
     const isAdmin = isAdministrator(user);
 
@@ -60,19 +77,30 @@ export default function NavMenu() {
     }
 
     return (
-        <aside className="app-sidebar">
+        <aside className={`app-sidebar${isCollapsed ? ' app-sidebar--collapsed' : ''}`}>
+            <button
+                type="button"
+                className="app-sidebar-toggle"
+                onClick={onToggle}
+                title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+                {isCollapsed ? <ExpandIcon /> : <CollapseIcon />}
+            </button>
+
             <nav className="app-nav" aria-label="Main navigation">
                 <div className="app-nav-section">
-                    <span className="app-nav-section-label">Workspace</span>
+                    {!isCollapsed && <span className="app-nav-section-label">Workspace</span>}
 
                     <NavLink
                         to="/backlogs"
                         className={({ isActive }) =>
                             `app-nav-link${isActive ? " app-nav-link--active" : ""}`
                         }
+                        title={isCollapsed ? 'Backlogs' : undefined}
                     >
                         <span className="app-nav-icon"><BacklogIcon /></span>
-                        <span>Backlogs</span>
+                        {!isCollapsed && <span>Backlogs</span>}
                     </NavLink>
 
                     <NavLink
@@ -80,24 +108,26 @@ export default function NavMenu() {
                         className={({ isActive }) =>
                             `app-nav-link${isActive ? " app-nav-link--active" : ""}`
                         }
+                        title={isCollapsed ? 'Boards' : undefined}
                     >
                         <span className="app-nav-icon"><BoardIcon /></span>
-                        <span>Boards</span>
+                        {!isCollapsed && <span>Boards</span>}
                     </NavLink>
                 </div>
 
                 {isAdmin && (
                     <div className="app-nav-section">
-                        <span className="app-nav-section-label">Administration</span>
+                        {!isCollapsed && <span className="app-nav-section-label">Administration</span>}
 
                         <NavLink
                             to="/admin/users"
                             className={({ isActive }) =>
                                 `app-nav-link${isActive ? " app-nav-link--active" : ""}`
                             }
+                            title={isCollapsed ? 'User Management' : undefined}
                         >
                             <span className="app-nav-icon"><UserMgmtIcon /></span>
-                            <span>User Management</span>
+                            {!isCollapsed && <span>User Management</span>}
                         </NavLink>
 
                         <NavLink
@@ -105,9 +135,10 @@ export default function NavMenu() {
                             className={({ isActive }) =>
                                 `app-nav-link${isActive ? " app-nav-link--active" : ""}`
                             }
+                            title={isCollapsed ? 'Audit Logs' : undefined}
                         >
                             <span className="app-nav-icon"><AuditIcon /></span>
-                            <span>Audit Logs</span>
+                            {!isCollapsed && <span>Audit Logs</span>}
                         </NavLink>
                     </div>
                 )}
@@ -121,29 +152,32 @@ export default function NavMenu() {
                             `app-sidebar-profile-link${isActive ? " app-sidebar-profile-link--active" : ""}`
                         }
                         aria-label="Open profile and account settings"
+                        title={isCollapsed ? 'Profile' : undefined}
                     >
                         <div className="app-sidebar-avatar" aria-hidden="true">
                             {initials}
                         </div>
-                        <div className="app-sidebar-user-meta">
-                            <span className="app-sidebar-user-name">{user.fullName}</span>
-                            <span className="app-sidebar-user-role">{user.roleName}</span>
-                        </div>
+                        {!isCollapsed && (
+                            <div className="app-sidebar-user-meta">
+                                <span className="app-sidebar-user-name">{user.fullName}</span>
+                                <span className="app-sidebar-user-role">{user.roleName}</span>
+                            </div>
+                        )}
                     </NavLink>
                     <button
                         type="button"
                         className="app-sidebar-signout"
                         onClick={() => void handleLogout()}
-                        title="Sign out"
+                        title={isCollapsed ? 'Sign out' : 'Sign out'}
                     >
                         <LogoutIcon />
-                        <span>Sign out</span>
+                        {!isCollapsed && <span>Sign out</span>}
                     </button>
                 </div>
             ) : null}
 
             <div className="app-sidebar-footer">
-                <div className="app-sidebar-version">DSB v1.0</div>
+                {!isCollapsed && <div className="app-sidebar-version">DSB v1.0</div>}
             </div>
         </aside>
     );

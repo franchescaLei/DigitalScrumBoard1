@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,7 +29,7 @@ namespace DigitalScrumBoard1.Services
                 UserID = actorUserId,
                 Action = action,
                 IPAddress = ipAddress,
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTimeHelper.Now,
                 Success = success,
                 Details = details,
                 TargetType = targetType,

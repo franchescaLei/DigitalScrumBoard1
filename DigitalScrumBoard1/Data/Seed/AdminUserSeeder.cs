@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +24,7 @@ namespace DigitalScrumBoard1.Data.Seed
                     TeamName = "Default Team",
                     Description = "System default team",
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTimeHelper.Now
                 };
 
                 context.Teams.Add(team);
@@ -43,8 +44,8 @@ namespace DigitalScrumBoard1.Data.Seed
                 Disabled = false,
                 DisabledAt = null,
 
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = DateTimeHelper.Now,
+                UpdatedAt = DateTimeHelper.Now,
                 LastLogin = null,
 
                 MustChangePassword = false,

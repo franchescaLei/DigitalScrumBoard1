@@ -454,7 +454,9 @@
     border-right: 1px solid var(--sidebar-border);
     display: flex;
     flex-direction: column;
+    overflow-x: hidden;
     overflow-y: auto;
+    position: relative;
     transition: background 0.25s var(--ease-out), border-color 0.25s var(--ease-out);
 }
 
@@ -1068,6 +1070,189 @@
 
 .app-animate-in {
     animation: appFadeUp 0.35s var(--ease-out) both;
+}
+
+/* ─────────────────────────────────────────────
+   SIDEBAR COLLAPSE TOGGLE
+───────────────────────────────────────────── */
+
+.app-sidebar-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    width: 20px;
+    height: 40px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--sidebar-text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: color 0.15s ease, background 0.15s ease;
+    z-index: 10;
+    transform: translateY(-50%);
+    outline: none;
+}
+
+.app-sidebar-toggle:hover,
+.app-sidebar-toggle:focus {
+    color: var(--accent-red);
+    background: var(--sidebar-hover-bg);
+}
+
+.app-sidebar--collapsed {
+    width: 72px;
+    padding: 18px 0;
+}
+
+.app-sidebar--collapsed .app-sidebar-toggle {
+    right: 0;
+    transform: translateY(-50%);
+}
+
+.app-sidebar--collapsed .app-nav-section-label {
+    display: none;
+}
+
+.app-sidebar--collapsed .app-nav-link {
+    justify-content: center;
+    padding: 11px 0;
+    position: relative;
+}
+
+.app-sidebar--collapsed .app-nav-icon {
+    width: 22px;
+    height: 22px;
+}
+
+.app-sidebar--collapsed .app-sidebar-avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 0.8rem;
+}
+
+.app-sidebar--collapsed .app-nav-link::after {
+    content: attr(title);
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--card-bg);
+    color: var(--card-text);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+}
+
+.app-sidebar--collapsed .app-nav-link:hover::after {
+    opacity: 1;
+}
+
+.app-sidebar--collapsed .app-nav-link--active::before {
+    height: 50%;
+    width: 3px;
+}
+
+.app-sidebar--collapsed .app-sidebar-profile-link {
+    justify-content: center;
+    padding: 12px 0;
+    position: relative;
+}
+
+.app-sidebar--collapsed .app-sidebar-profile-link::after {
+    content: 'Profile';
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--card-bg);
+    color: var(--card-text);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+}
+
+.app-sidebar--collapsed .app-sidebar-profile-link:hover::after {
+    opacity: 1;
+}
+
+.app-sidebar--collapsed .app-sidebar-signout {
+    padding: 11px 0;
+    justify-content: center;
+    position: relative;
+}
+
+.app-sidebar--collapsed .app-sidebar-signout::after {
+    content: 'Sign out';
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--card-bg);
+    color: var(--card-text);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+}
+
+.app-sidebar--collapsed .app-sidebar-signout:hover::after {
+    opacity: 1;
+}
+
+.app-sidebar--collapsed .app-sidebar-signout span {
+    display: none;
+}
+
+.app-sidebar--collapsed .app-sidebar-footer {
+    display: none;
+}
+
+.app-sidebar-toggle::after {
+    content: attr(title);
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--card-bg);
+    color: var(--card-text);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+}
+
+.app-sidebar-toggle:hover::after {
+    opacity: 1;
 }
 
 /* ─────────────────────────────────────────────

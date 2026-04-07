@@ -67,21 +67,7 @@ const KanbanMark = () => (
         <rect x="9" y="11" width="22" height="1.5" rx="0.75" fill="#C4933F" opacity="0.3" />
     </svg>
 );
-
-function formatNotifTime(iso: string): string {
-    try {
-        const d = new Date(iso);
-        if (Number.isNaN(d.getTime())) return "";
-        const now = Date.now();
-        const diffMs = now - d.getTime();
-        if (diffMs < 60_000) return "Just now";
-        if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-        if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-        return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    } catch {
-        return "";
-    }
-}
+import { formatRelativeTime } from '../utils/dateFormatter';
 
 export default function Header() {
     const [unreadCount, setUnreadCount] = useState(0);
@@ -348,7 +334,7 @@ export default function Header() {
                                 >
                                     <span className="app-notif-item-type">{item.notificationType}</span>
                                     <span className="app-notif-item-msg">{item.message}</span>
-                                    <span className="app-notif-item-time">{formatNotifTime(item.createdAt)}</span>
+                                    <span className="app-notif-item-time">{formatRelativeTime(item.createdAt)}</span>
                                 </button>
                             </li>
                         ))}

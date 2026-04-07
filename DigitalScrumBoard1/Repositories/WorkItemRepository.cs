@@ -1,3 +1,4 @@
+using DigitalScrumBoard1.Utilities;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs.WorkItems;
 using DigitalScrumBoard1.Models;
@@ -433,7 +434,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
     public Task AssignToSprintAsync(WorkItem workItem, int sprintId, CancellationToken ct)
     {
         workItem.SprintID = sprintId;
-        workItem.UpdatedAt = DateTime.UtcNow;
+        workItem.UpdatedAt = DateTimeHelper.Now;
 
         _db.WorkItems.Update(workItem);
         return _db.SaveChangesAsync(ct);
@@ -442,7 +443,7 @@ public sealed class WorkItemRepository : IWorkItemRepository
     public Task RemoveFromSprintAsync(WorkItem workItem, CancellationToken ct)
     {
         workItem.SprintID = null;
-        workItem.UpdatedAt = DateTime.UtcNow;
+        workItem.UpdatedAt = DateTimeHelper.Now;
 
         _db.WorkItems.Update(workItem);
         return _db.SaveChangesAsync(ct);

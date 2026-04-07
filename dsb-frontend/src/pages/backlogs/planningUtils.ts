@@ -1,6 +1,7 @@
 import type { AgendaWorkItem, SprintSummary } from '../../types/planning';
 import type { UserProfile } from '../../types/auth';
 import { isElevatedWorkspaceRole } from '../../utils/userProfile';
+import { formatDateRange } from '../../utils/dateFormatter';
 
 export const STORY_TYPE = 'Story';
 export const TASK_TYPE = 'Task';
@@ -9,17 +10,7 @@ export function normTypeName(w: Pick<AgendaWorkItem, 'typeName'>): string {
     return (w.typeName ?? '').trim().toLowerCase();
 }
 
-export function formatDateRange(startDate: string | null | undefined, endDate: string | null | undefined) {
-    if (!startDate && !endDate) return '—';
-    if (!startDate) return endDate ?? '';
-    if (!endDate) return startDate;
-    const fmt = (d: string) => {
-        const date = new Date(d);
-        if (isNaN(date.getTime())) return d;
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    };
-    return `${fmt(startDate)} – ${fmt(endDate)}`;
-}
+export { formatDateRange };
 
 export function canManageSprint(me: UserProfile | null, sprint: SprintSummary) {
     if (!me) return false;

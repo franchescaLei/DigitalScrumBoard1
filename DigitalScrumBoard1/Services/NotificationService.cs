@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.DTOs.Notifications;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.DTOs.Notifications;
 using DigitalScrumBoard1.DTOs.SignalR;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
@@ -51,7 +52,7 @@ public sealed class NotificationService : INotificationService
         if (!row.IsRead)
         {
             row.IsRead = true;
-            row.ReadAt = DateTime.UtcNow;
+            row.ReadAt = DateTimeHelper.Now;
             await _repo.SaveChangesAsync(ct);
             
             // Broadcast unread count update to user's other clients
@@ -60,7 +61,7 @@ public sealed class NotificationService : INotificationService
             {
                 UserID = userId,
                 UnreadCount = newUnreadCount,
-                UpdatedAt = DateTime.UtcNow
+                UpdatedAt = DateTimeHelper.Now
             }, ct);
         }
 
@@ -69,7 +70,7 @@ public sealed class NotificationService : INotificationService
 
     public async Task<int> MarkAllAsReadAsync(int userId, CancellationToken ct)
     {
-        var marked = await _repo.MarkAllAsReadAsync(userId, DateTime.UtcNow, ct);
+        var marked = await _repo.MarkAllAsReadAsync(userId, DateTimeHelper.Now, ct);
         
         if (marked > 0)
         {
@@ -78,7 +79,7 @@ public sealed class NotificationService : INotificationService
             {
                 UserID = userId,
                 UnreadCount = 0,
-                UpdatedAt = DateTime.UtcNow
+                UpdatedAt = DateTimeHelper.Now
             }, ct);
         }
         

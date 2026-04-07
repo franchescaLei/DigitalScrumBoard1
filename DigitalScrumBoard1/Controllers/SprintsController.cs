@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.DTOs.Sprints;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.DTOs.Sprints;
 using DigitalScrumBoard1.DTOs.SignalR;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
@@ -33,13 +34,20 @@ public sealed class SprintsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<ActionResult<SprintCreatedResponseDto>> Create(
         [FromBody] CreateSprintRequestDto req,
         CancellationToken ct)
     {
         if (!ModelState.IsValid)
             return ValidationProblem(ModelState);
+
+        var userId = TryGetUserId(User);
+        if (userId is null)
+            return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!IsElevatedSprintRole())
+            return BadRequest(new { message = "You do not have permission to create sprints. Only Administrators and Scrum Masters can create sprints." });
 
         var sprintName = (req.SprintName ?? "").Trim();
         var goal = (req.Goal ?? "").Trim();
@@ -73,11 +81,7 @@ public sealed class SprintsController : ControllerBase
                 return BadRequest(new { message = "Team not found." });
         }
 
-        var userId = TryGetUserId(User);
-        if (userId is null)
-            return Unauthorized(new { message = "Missing/invalid user identity." });
-
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         var sprint = new Sprint
         {
@@ -372,11 +376,11 @@ public sealed class SprintsController : ControllerBase
             RelatedSprintID = id,
             NotificationType = "SprintUpdated",
             Message = $"Sprint '{sprint.SprintName}' has been updated.",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTimeHelper.Now,
             IsRead = false
         }).ToList();
 
-        sprint.UpdatedAt = DateTime.UtcNow;
+        sprint.UpdatedAt = DateTimeHelper.Now;
         await _repo.SaveChangesAsync(ct);
         if (notifications.Count > 0)
             await _notifications.AddNotificationsAsync(notifications, ct);
@@ -499,7 +503,7 @@ public sealed class SprintsController : ControllerBase
             RelatedSprintID = id,
             NotificationType = "SprintStarted",
             Message = $"Sprint '{sprint.SprintName}' has started.",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTimeHelper.Now,
             IsRead = false
         }).ToList();
 
@@ -517,7 +521,7 @@ public sealed class SprintsController : ControllerBase
             Goal = sprint.Goal,
             ManagedBy = sprint.ManagedBy,
             TeamID = sprint.TeamID,
-            ChangedAt = DateTime.UtcNow
+            ChangedAt = DateTimeHelper.Now
         }, ct);
 
         return Ok(new
@@ -596,7 +600,7 @@ public sealed class SprintsController : ControllerBase
             RelatedSprintID = id,
             NotificationType = "SprintStopped",
             Message = $"Sprint '{sprint.SprintName}' has been stopped.",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTimeHelper.Now,
             IsRead = false
         }).ToList();
 
@@ -616,7 +620,7 @@ public sealed class SprintsController : ControllerBase
             TeamID = sprint.TeamID,
             UnfinishedCount = unfinishedCount,
             CompletedCount = completedCount,
-            ChangedAt = DateTime.UtcNow
+            ChangedAt = DateTimeHelper.Now
         }, ct);
 
         return Ok(new
@@ -701,7 +705,7 @@ public sealed class SprintsController : ControllerBase
             Message = unfinishedCount > 0
                 ? $"Sprint '{sprintName}' has been completed. {unfinishedCount} unfinished work item(s) were returned to backlog."
                 : $"Sprint '{sprintName}' has been completed.",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTimeHelper.Now,
             IsRead = false
         }).ToList();
 
@@ -717,7 +721,7 @@ public sealed class SprintsController : ControllerBase
             UnfinishedCount = unfinishedCount,
             CompletedCount = completedCount,
             ReturnedToBacklogCount = unfinishedCount,
-            ChangedAt = DateTime.UtcNow
+            ChangedAt = DateTimeHelper.Now
         }, ct);
 
         return Ok(new
@@ -730,7 +734,7 @@ public sealed class SprintsController : ControllerBase
     }
 
     [HttpDelete("{id:int}")]
-    [Authorize(AuthenticationSchemes = "MyCookieAuth", Roles = "Administrator,Scrum Master,ScrumMaster")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> Delete([FromRoute] int id, CancellationToken ct)
     {
         var sprint = await _repo.GetByIdAsync(id, ct);
@@ -741,6 +745,9 @@ public sealed class SprintsController : ControllerBase
         var userId = TryGetUserId(User);
         if (userId is null)
             return Unauthorized(new { message = "Missing/invalid user identity." });
+
+        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
+            return BadRequest(new { message = "You do not have permission to delete this sprint. Only Administrators, Scrum Masters, or the sprint manager can delete sprints." });
 
         // Get affected user IDs before deletion for notification
         var affectedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
@@ -764,10 +771,10 @@ public sealed class SprintsController : ControllerBase
         var notifications = affectedUserIds.Select(assigneeUserId => new Notification
         {
             UserID = assigneeUserId,
-            RelatedSprintID = id,
+            RelatedSprintID = null,
             NotificationType = "SprintDeleted",
             Message = $"Sprint '{sprint.SprintName}' has been deleted. {returnedToBacklogCount} work item(s) returned to backlog.",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = DateTimeHelper.Now,
             IsRead = false
         }).ToList();
 
@@ -780,7 +787,7 @@ public sealed class SprintsController : ControllerBase
             sprintID = id,
             sprintName = sprint.SprintName,
             returnedToBacklogCount,
-            deletedAt = DateTime.UtcNow
+            deletedAt = DateTimeHelper.Now
         }, ct);
 
         return Ok(new

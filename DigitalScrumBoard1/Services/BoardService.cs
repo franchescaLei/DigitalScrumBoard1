@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs;
 using DigitalScrumBoard1.DTOs.SignalR;
 using DigitalScrumBoard1.Hubs;
@@ -162,7 +163,7 @@ public class BoardService : IBoardService
 
         var oldStatus = item.Status;
         var oldBoardOrder = item.BoardOrder;
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         var sourceColumnItems = await _repo.GetTrackedColumnWorkItemsAsync(
             item.SprintID.Value,
@@ -370,7 +371,7 @@ public class BoardService : IBoardService
         if (existingIndex == newPosition)
             return;
 
-        var now = DateTime.UtcNow;
+        var now = DateTimeHelper.Now;
 
         orderedColumnItems.RemoveAt(existingIndex);
         orderedColumnItems.Insert(newPosition, item);

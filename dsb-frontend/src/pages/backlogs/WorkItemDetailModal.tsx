@@ -5,6 +5,7 @@ import { priorityAccentClass } from './planningUtils';
 import { lookupUsers, lookupTeams, type UserLookup } from '../../api/lookupsApi';
 import { getBoardHubConnection } from '../../services/boardHub';
 import { useDebounced } from './useDebounced';
+import { formatDateTime, formatDate } from '../../utils/dateFormatter';
 
 // ─────────────────────────────────────────────
 // Icons
@@ -98,31 +99,6 @@ interface EditableFields {
 // Helpers
 // ─────────────────────────────────────────────
 
-function formatTimestamp(iso: string | null | undefined): string {
-    if (!iso) return '—';
-    try {
-        const d = new Date(iso);
-        if (isNaN(d.getTime())) return iso;
-        return d.toLocaleDateString(undefined, {
-            year: 'numeric', month: 'short', day: 'numeric',
-            hour: '2-digit', minute: '2-digit',
-        });
-    } catch {
-        return iso;
-    }
-}
-
-function formatDate(iso: string | null | undefined): string {
-    if (!iso) return '—';
-    try {
-        const d = new Date(iso);
-        if (isNaN(d.getTime())) return iso;
-        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-    } catch {
-        return iso;
-    }
-}
-
 function getInitials(name: string | null | undefined): string {
     if (!name) return '?';
     return name.split(' ').map(n => n[0] ?? '').join('').slice(0, 2).toUpperCase();
@@ -189,7 +165,7 @@ function CommentCard({
                 <div className="wi-comment-avatar">{getInitials(comment.commentedByName)}</div>
                 <div className="wi-comment-meta">
                     <span className="wi-comment-author">{comment.commentedByName ?? `User #${comment.commentedBy}`}</span>
-                    <span className="wi-comment-time">{formatTimestamp(comment.createdAt)}</span>
+                    <span className="wi-comment-time">{formatDateTime(comment.createdAt)}</span>
                 </div>
                 {(canEdit || canDelete) && !comment._optimistic && (
                     <div className="wi-comment-actions">
@@ -633,7 +609,6 @@ export function WorkItemDetailModal({
                 else payload.teamID = null;
             }
             await apiClient.patch(`/api/workitems/${item.workItemID}`, payload);
-            optimisticIdsRef.current.clear();
             setIsEditing(false);
             setSaveSuccess(true);
             setTimeout(() => setSaveSuccess(false), 3000);

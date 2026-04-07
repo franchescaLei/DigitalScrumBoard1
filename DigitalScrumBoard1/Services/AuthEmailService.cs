@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using DigitalScrumBoard1.Security;
 using Microsoft.Extensions.Options;
@@ -30,8 +31,8 @@ namespace DigitalScrumBoard1.Services
             {
                 UserID = user.UserID,
                 TokenHash = tokenHash,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddHours(24),
+                CreatedAt = DateTimeHelper.Now,
+                ExpiresAt = DateTimeHelper.Now.AddHours(24),
                 UsedAt = null
             });
 
@@ -67,8 +68,8 @@ namespace DigitalScrumBoard1.Services
             {
                 UserID = user.UserID,
                 TokenHash = tokenHash,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddHours(24),
+                CreatedAt = DateTimeHelper.Now,
+                ExpiresAt = DateTimeHelper.Now.AddHours(24),
                 UsedAt = null
             });
 

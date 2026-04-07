@@ -1,4 +1,5 @@
-﻿using System.Text;
+using DigitalScrumBoard1.Utilities;
+using System.Text;
 using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.Models;
 using Microsoft.EntityFrameworkCore;
@@ -95,7 +96,7 @@ namespace DigitalScrumBoard1.Services
                 .ToListAsync(ct);
 
             var csv = BuildCsv(rows);
-            var fileName = $"audit-logs-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv";
+            var fileName = $"audit-logs-{DateTimeHelper.Now:yyyyMMdd-HHmmss}.csv";
             return (Encoding.UTF8.GetBytes(csv), fileName);
         }
 

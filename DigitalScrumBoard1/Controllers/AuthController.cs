@@ -1,4 +1,5 @@
-﻿using DigitalScrumBoard1.Data;
+using DigitalScrumBoard1.Utilities;
+using DigitalScrumBoard1.Data;
 using DigitalScrumBoard1.DTOs.Authentication;
 using DigitalScrumBoard1.Hubs;
 using DigitalScrumBoard1.Models;
@@ -155,8 +156,8 @@ namespace DigitalScrumBoard1.Controllers
                 ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8)
             });
 
-            user.LastLogin = DateTime.UtcNow;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.LastLogin = DateTimeHelper.Now;
+            user.UpdatedAt = DateTimeHelper.Now;
             await _db.SaveChangesAsync(ct);
 
             await _audit.LogAsync(user.UserID, "LOGIN", "User", user.UserID, true, "Login success.", ip, ct);
@@ -240,7 +241,7 @@ namespace DigitalScrumBoard1.Controllers
             user.MiddleName = middleName;
             user.LastName = lastName;
             user.NameExtension = nameExtension;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -301,7 +302,7 @@ namespace DigitalScrumBoard1.Controllers
 
             user.PasswordHash = PasswordHasher.Hash(req.NewPassword);
             user.MustChangePassword = false;
-            user.UpdatedAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -333,12 +334,12 @@ namespace DigitalScrumBoard1.Controllers
             if (row.UsedAt is not null)
                 return BadRequest(new { message = "Token already used." });
 
-            if (DateTime.UtcNow > row.ExpiresAt)
+            if (DateTimeHelper.Now > row.ExpiresAt)
                 return BadRequest(new { message = "Token expired." });
 
-            row.UsedAt = DateTime.UtcNow;
+            row.UsedAt = DateTimeHelper.Now;
             row.User.EmailVerified = true;
-            row.User.UpdatedAt = DateTime.UtcNow;
+            row.User.UpdatedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -381,7 +382,7 @@ namespace DigitalScrumBoard1.Controllers
                 return ValidationProblem(ModelState);
 
             var email = req.EmailAddress.Trim().ToLowerInvariant();
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             var genericResponse = Ok(new
             {
@@ -445,7 +446,7 @@ namespace DigitalScrumBoard1.Controllers
             if (row.UsedAt is not null)
                 return BadRequest(new { message = "Code already used." });
 
-            if (DateTime.UtcNow > row.ExpiresAt)
+            if (DateTimeHelper.Now > row.ExpiresAt)
                 return BadRequest(new
                 {
                     message = "Code expired.",
@@ -458,7 +459,7 @@ namespace DigitalScrumBoard1.Controllers
             return Ok(new
             {
                 message = "Code verified.",
-                expiresInSeconds = (int)Math.Max(0, Math.Ceiling((row.ExpiresAt - DateTime.UtcNow).TotalSeconds))
+                expiresInSeconds = (int)Math.Max(0, Math.Ceiling((row.ExpiresAt - DateTimeHelper.Now).TotalSeconds))
             });
         }
 
@@ -491,7 +492,7 @@ namespace DigitalScrumBoard1.Controllers
             if (row.UsedAt is not null)
                 return BadRequest(new { message = "Code already used." });
 
-            if (DateTime.UtcNow > row.ExpiresAt)
+            if (DateTimeHelper.Now > row.ExpiresAt)
                 return BadRequest(new
                 {
                     message = "Code expired.",
@@ -512,8 +513,8 @@ namespace DigitalScrumBoard1.Controllers
 
             row.User.PasswordHash = PasswordHasher.Hash(req.NewPassword);
             row.User.MustChangePassword = false;
-            row.User.UpdatedAt = DateTime.UtcNow;
-            row.UsedAt = DateTime.UtcNow;
+            row.User.UpdatedAt = DateTimeHelper.Now;
+            row.UsedAt = DateTimeHelper.Now;
 
             await _db.SaveChangesAsync(ct);
 
@@ -646,7 +647,7 @@ namespace DigitalScrumBoard1.Controllers
             if (info.ConsecutiveFailures <= 0 || info.LatestFailureUtc is null)
                 return (false, false, TimeSpan.Zero);
 
-            var now = DateTime.UtcNow;
+            var now = DateTimeHelper.Now;
 
             if (info.ConsecutiveFailures >= AccountLockoutFailedAttempt)
             {

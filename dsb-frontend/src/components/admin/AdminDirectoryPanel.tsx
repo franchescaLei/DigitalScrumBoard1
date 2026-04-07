@@ -38,7 +38,7 @@ interface Role {
 
 type AdminTab = 'users' | 'teams' | 'roles';
 type SortKey = 'name' | 'role' | 'team' | 'status';
-type FilterKey = 'all' | 'locked' | 'pending-pw' | 'inactive' | 'unverified';
+type FilterKey = 'all' | 'active' | 'locked' | 'pending-pw' | 'inactive' | 'unverified';
 type ConfirmAction = 'disable' | 'enable' | 'lock' | 'unlock';
 
 // ─────────────────────────────────────────────
@@ -438,7 +438,7 @@ interface UserManagementTabProps {
 function UserManagementTab({ users, teams, onRefreshDirectory }: UserManagementTabProps) {
     const [search, setSearch] = useState('');
     const [sortKey, setSortKey] = useState<SortKey>('name');
-    const [filterKey, setFilterKey] = useState<FilterKey>('all');
+    const [filterKey, setFilterKey] = useState<FilterKey>('active');
     const [teamFilter, setTeamFilter] = useState<string>('all');
     const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
@@ -447,6 +447,7 @@ function UserManagementTab({ users, teams, onRefreshDirectory }: UserManagementT
     const selectedUser = selectedUserId != null ? users.find((u) => u.id === selectedUserId) ?? null : null;
 
     const filterCounts = useMemo(() => ({
+        active: users.filter((u) => u.isActive).length,
         locked: users.filter((u) => u.isLocked).length,
         'pending-pw': users.filter((u) => u.mustChangePassword).length,
         inactive: users.filter((u) => !u.isActive).length,
@@ -466,10 +467,11 @@ function UserManagementTab({ users, teams, onRefreshDirectory }: UserManagementT
         }
 
         switch (filterKey) {
-            case 'locked': result = result.filter((u) => u.isLocked); break;
-            case 'pending-pw': result = result.filter((u) => u.mustChangePassword); break;
+            case 'active': result = result.filter((u) => u.isActive); break;
+            case 'locked': result = result.filter((u) => u.isActive && u.isLocked); break;
+            case 'pending-pw': result = result.filter((u) => u.isActive && u.mustChangePassword); break;
             case 'inactive': result = result.filter((u) => !u.isActive); break;
-            case 'unverified': result = result.filter((u) => !u.emailVerified); break;
+            case 'unverified': result = result.filter((u) => u.isActive && !u.emailVerified); break;
         }
 
         if (teamFilter === 'none') {
@@ -493,6 +495,7 @@ function UserManagementTab({ users, teams, onRefreshDirectory }: UserManagementT
 
     const filterLabels: Record<FilterKey, string> = {
         all: 'All users',
+        active: `Active${filterCounts.active ? ` · ${filterCounts.active}` : ''}`,
         locked: `Locked${filterCounts.locked ? ` · ${filterCounts.locked}` : ''}`,
         'pending-pw': `PW Pending${filterCounts['pending-pw'] ? ` · ${filterCounts['pending-pw']}` : ''}`,
         inactive: `Inactive${filterCounts.inactive ? ` · ${filterCounts.inactive}` : ''}`,

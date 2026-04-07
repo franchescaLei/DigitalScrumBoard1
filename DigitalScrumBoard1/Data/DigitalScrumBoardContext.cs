@@ -1,4 +1,4 @@
-﻿using DigitalScrumBoard1.Models;
+using DigitalScrumBoard1.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace DigitalScrumBoard1.Data;
@@ -205,7 +205,7 @@ public partial class DigitalScrumBoardContext : DbContext
 
             e.Property(x => x.PasswordHash).HasMaxLength(255).IsRequired();
 
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
             e.Property(x => x.UpdatedAt).IsRequired();
 
             e.Property(x => x.Disabled).HasDefaultValue(false).IsRequired();
@@ -239,7 +239,7 @@ public partial class DigitalScrumBoardContext : DbContext
             e.HasIndex(x => x.TeamName).IsUnique();
             e.Property(x => x.Description).HasMaxLength(255);
             e.Property(x => x.IsActive).HasDefaultValue(true);
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())");
         });
 
         // AuditLog
@@ -248,7 +248,7 @@ public partial class DigitalScrumBoardContext : DbContext
             e.HasKey(x => x.LogID);
             e.Property(x => x.Action).HasMaxLength(100).IsRequired();
             e.Property(x => x.IPAddress).HasMaxLength(45).IsRequired();
-            e.Property(x => x.Timestamp).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.Timestamp).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
             e.Property(x => x.Details).HasMaxLength(500);
 
             e.Property(x => x.TargetType).HasMaxLength(50);
@@ -317,7 +317,7 @@ public partial class DigitalScrumBoardContext : DbContext
                 "[Priority] IS NULL OR [Priority] IN ('Low','Medium','High','Critical')"
             ));
 
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
             e.Property(x => x.UpdatedAt).IsRequired();
 
             e.Property(x => x.IsDeleted).HasDefaultValue(false).IsRequired();
@@ -372,7 +372,7 @@ public partial class DigitalScrumBoardContext : DbContext
         {
             e.HasKey(x => x.CommentID);
 
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
             e.Property(x => x.IsDeleted).HasDefaultValue(false).IsRequired();
 
             // Indexes for common query patterns
@@ -398,7 +398,7 @@ public partial class DigitalScrumBoardContext : DbContext
             e.HasKey(x => x.HistoryID);
 
             e.Property(x => x.FieldChanged).HasMaxLength(50).IsRequired();
-            e.Property(x => x.ChangedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.ChangedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
 
             // Indexes for common query patterns
             e.HasIndex(x => x.WorkItemID);
@@ -432,7 +432,7 @@ public partial class DigitalScrumBoardContext : DbContext
                 "[Status] IN ('Planned','Active','Completed')"
             ));
 
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())");
             e.Property(x => x.UpdatedAt).IsRequired();
 
             // Indexes for common query patterns
@@ -458,7 +458,7 @@ public partial class DigitalScrumBoardContext : DbContext
 
             e.Property(x => x.NotificationType).HasMaxLength(50).IsRequired();
             e.Property(x => x.IsRead).HasDefaultValue(false).IsRequired();
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()").IsRequired();
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("DATEADD(hour, 8, GETUTCDATE())").IsRequired();
 
             // Indexes for common query patterns
             e.HasIndex(x => new { x.UserID, x.IsRead });
