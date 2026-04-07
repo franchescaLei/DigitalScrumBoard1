@@ -97,10 +97,16 @@ public class BoardService : IBoardService
 
         var filteredList = filtered.ToList();
 
+        // Resolve sprint manager name from loaded navigation property
+        string? sprintManagerName = null;
+        if (sprint.Manager is not null)
+            sprintManagerName = $"{sprint.Manager.FirstName} {sprint.Manager.LastName}".Trim();
+
         return new BoardResponseDto
         {
             SprintID = sprint.SprintID,
             SprintName = sprint.SprintName,
+            SprintManagerName = sprintManagerName,
             Todo = BuildColumn(filteredList, "To-do", normalizedSortBy, normalizedSortDirection),
             Ongoing = BuildColumn(filteredList, "Ongoing", normalizedSortBy, normalizedSortDirection),
             ForChecking = BuildColumn(filteredList, "For Checking", normalizedSortBy, normalizedSortDirection),
@@ -600,7 +606,11 @@ public class BoardService : IBoardService
             WorkItemID = item.WorkItemID,
             Title = item.Title ?? string.Empty,
             Status = item.Status ?? string.Empty,
-            AssignedUserID = item.AssignedUserID
+            TypeName = item.WorkItemType?.TypeName,
+            Priority = item.Priority,
+            AssignedUserID = item.AssignedUserID,
+            AssignedUserName = item.AssignedUser != null ? $"{item.AssignedUser.FirstName} {item.AssignedUser.LastName}".Trim() : null,
+            CommentCount = 0
         };
     }
 

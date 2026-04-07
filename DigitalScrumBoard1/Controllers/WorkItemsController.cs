@@ -45,19 +45,11 @@ public sealed class WorkItemsController : ControllerBase
         if (userId is null)
             return Unauthorized(new { message = "Missing/invalid user identity." });
 
-        if (!IsElevatedWorkItemRole())
-            return BadRequest(new { message = "You do not have permission to create work items. Only Administrators and Scrum Masters can create work items." });
-
         var type = NormalizeType(req.Type);
         if (type is null)
             return BadRequest(new { message = "Invalid Type. Allowed: Epic, Story, Task." });
 
-        var title = (req.Title ?? "").Trim();
-        var desc = (req.Description ?? "").Trim();
-        var priority = NormalizePriority(req.Priority);
-        if (title.Length == 0) return BadRequest(new { message = "Title is required." });
-        if (desc.Length == 0) return BadRequest(new { message = "Description is required." });
-        if (priority is null) return BadRequest(new { message = "Invalid Priority. Allowed: Low, Medium, High, Critical." });
+        var isElevated = IsElevatedWorkItemRole();
 
         var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
         var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
@@ -74,53 +66,76 @@ public sealed class WorkItemsController : ControllerBase
             _ => throw new InvalidOperationException()
         };
 
-        switch (type)
+        // ── Authorization: who can create what ──
+        // Epics: Admin/Scrum Master only
+        if (type == "Epic" && !isElevated)
+            return BadRequest(new { message = "Only Administrators and Scrum Masters can create Epics." });
+
+        // Stories and Tasks with a parent: parent ownership check
+        if (type == "Story" || type == "Task")
         {
-            case "Epic":
-                if (req.ParentWorkItemID is not null)
-                    return BadRequest(new { message = "Epic cannot have a parent." });
-                break;
+            if (req.ParentWorkItemID is null)
+                return BadRequest(new { message = $"{type} requires ParentWorkItemID." });
 
-            case "Story":
-                if (req.ParentWorkItemID is null)
-                    return BadRequest(new { message = "Story requires ParentWorkItemID (Epic)." });
+            var parentInfo = await _repo.GetWorkItemTypeInfoByIdAsync(req.ParentWorkItemID.Value, ct);
+            if (parentInfo is null)
+                return BadRequest(new { message = "Parent work item not found." });
+            if (parentInfo.Value.IsDeleted)
+                return BadRequest(new { message = "Cannot create under a deleted parent work item." });
 
-                var storyParent = await _repo.GetWorkItemTypeInfoByIdAsync(req.ParentWorkItemID.Value, ct);
-                if (storyParent is null)
-                    return BadRequest(new { message = "Parent work item not found." });
+            // For Tasks under a Story: only the Story's assignee or elevated users can create
+            if (type == "Task" && parentInfo.Value.WorkItemTypeID == storyTypeId.Value && !isElevated)
+            {
+                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
+                if (parent is null || parent.AssignedUserID != userId.Value)
+                    return Forbid("Only the Story assignee or Administrators/Scrum Masters can create tasks under this Story.");
+            }
 
-                if (storyParent.Value.IsDeleted)
-                    return BadRequest(new { message = "Cannot create under a deleted parent work item." });
+            // For Stories under an Epic: only the Epic's assignee or elevated users can create
+            if (type == "Story" && !isElevated)
+            {
+                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
+                if (parent is null || parent.AssignedUserID != userId.Value)
+                    return Forbid("Only the Epic assignee or Administrators/Scrum Masters can create stories under this Epic.");
+            }
 
-                if (storyParent.Value.WorkItemTypeID != epicTypeId.Value)
-                    return BadRequest(new { message = "Story parent must be an Epic." });
+            // For Tasks under an Epic: only the Epic's assignee or elevated users can create
+            if (type == "Task" && parentInfo.Value.WorkItemTypeID == epicTypeId.Value && !isElevated)
+            {
+                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
+                if (parent is null || parent.AssignedUserID != userId.Value)
+                    return Forbid("Only the Epic assignee or Administrators/Scrum Masters can create tasks under this Epic.");
+            }
 
-                break;
+            // Validate parent type constraints
+            if (type == "Story" && parentInfo.Value.WorkItemTypeID != epicTypeId.Value)
+                return BadRequest(new { message = "Story parent must be an Epic." });
 
-            case "Task":
-                if (req.ParentWorkItemID is null)
-                    return BadRequest(new { message = "Task requires ParentWorkItemID (Epic or Story)." });
-
-                var taskParent = await _repo.GetWorkItemTypeInfoByIdAsync(req.ParentWorkItemID.Value, ct);
-                if (taskParent is null)
-                    return BadRequest(new { message = "Parent work item not found." });
-
-                if (taskParent.Value.IsDeleted)
-                    return BadRequest(new { message = "Cannot create under a deleted parent work item." });
-
-                var parentType = taskParent.Value.WorkItemTypeID;
+            if (type == "Task")
+            {
+                var parentType = parentInfo.Value.WorkItemTypeID;
                 if (parentType != epicTypeId.Value && parentType != storyTypeId.Value)
                     return BadRequest(new { message = "Task parent must be an Epic or Story." });
 
-                if (req.DueDate.HasValue && taskParent.Value.WorkItemTypeID == storyTypeId.Value)
+                if (req.DueDate.HasValue && parentInfo.Value.WorkItemTypeID == storyTypeId.Value)
                 {
-                    var storyDueDate = taskParent.Value.DueDate;
+                    var storyDueDate = parentInfo.Value.DueDate;
                     if (storyDueDate.HasValue && req.DueDate.Value > storyDueDate.Value)
                         return BadRequest(new { message = $"Task due date cannot be later than its parent story's due date ({storyDueDate.Value})." });
                 }
-
-                break;
+            }
         }
+
+        // If no parent and not elevated (creating orphan Task/Story), reject
+        if ((type == "Story" || type == "Task") && req.ParentWorkItemID is null && !isElevated)
+            return BadRequest(new { message = "Only Administrators and Scrum Masters can create work items without a parent." });
+
+        var title = (req.Title ?? "").Trim();
+        var desc = (req.Description ?? "").Trim();
+        var priority = NormalizePriority(req.Priority);
+        if (title.Length == 0) return BadRequest(new { message = "Title is required." });
+        if (desc.Length == 0) return BadRequest(new { message = "Description is required." });
+        if (priority is null) return BadRequest(new { message = "Invalid Priority. Allowed: Low, Medium, High, Critical." });
 
         if (req.TeamID.HasValue)
         {
@@ -583,9 +598,11 @@ public sealed class WorkItemsController : ControllerBase
                 Priority = w.Priority,
                 DueDate = w.DueDate,
                 AssignedUserID = w.AssignedUserID,
+                AssignedUserName = w.AssignedUser != null ? $"{w.AssignedUser.FirstName} {w.AssignedUser.LastName}".Trim() : null,
                 ParentWorkItemID = w.ParentWorkItemID,
                 TeamID = w.TeamID,
                 SprintID = w.SprintID,
+                TypeName = w.WorkItemType != null ? w.WorkItemType.TypeName : null,
                 CreatedAt = w.CreatedAt,
                 UpdatedAt = w.UpdatedAt
             })
@@ -594,6 +611,9 @@ public sealed class WorkItemsController : ControllerBase
         return Ok(filtered);
     }
 
+    /// <summary>
+    /// Assign a work item to a sprint. If the item is a Story, all child Tasks are also batch-assigned.
+    /// </summary>
     [HttpPut("{id:int}/assign-sprint")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> AssignToSprint(
@@ -648,26 +668,70 @@ public sealed class WorkItemsController : ControllerBase
         if (workItem.DueDate.HasValue && sprint.EndDate < workItem.DueDate.Value)
             return BadRequest(new { message = $"Cannot assign work item to this sprint. The work item's due date ({workItem.DueDate.Value}) is after the sprint's end date ({sprint.EndDate})." });
 
+        // ── Assign the primary work item ──
         await _repo.AssignToSprintAsync(workItem, req.SprintID, ct);
 
+        var notifications = new List<Notification>();
+
+        // Notify assignee of the primary item
         if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
         {
-            await _notifications.AddNotificationsAsync(new[]
+            notifications.Add(new Notification
             {
-                new Notification
-                {
-                    UserID = workItem.AssignedUserID.Value,
-                    RelatedWorkItemID = workItem.WorkItemID,
-                    RelatedSprintID = req.SprintID,
-                    NotificationType = "WorkItemAssignedToSprint",
-                    Message = $"Work item '{workItem.Title}' was added to sprint '{sprint.SprintName}'.",
-                    CreatedAt = DateTimeHelper.Now,
-                    IsRead = false
-                }
-            }, ct);
+                UserID = workItem.AssignedUserID.Value,
+                RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = req.SprintID,
+                NotificationType = "WorkItemAssignedToSprint",
+                Message = $"Work item '{workItem.Title}' was added to sprint '{sprint.SprintName}'.",
+                CreatedAt = DateTimeHelper.Now,
+                IsRead = false
+            });
         }
 
-        // Broadcast sprint assignment to ALL clients for real-time backlog/sprint list updates
+        // ── If this is a Story, batch-assign all child Tasks ──
+        var childTaskIds = new List<int>();
+        if (itemInfo.Value.WorkItemTypeID == storyTypeId.Value)
+        {
+            var childTasks = await _repo.GetChildTasksByParentIdAsync(workItem.WorkItemID, ct);
+
+            foreach (var task in childTasks)
+            {
+                if (task.Status == "Completed")
+                    continue; // Skip completed tasks
+
+                // Track which tasks we're assigning for notifications
+                childTaskIds.Add(task.WorkItemID);
+
+                // We need a tracked entity to update
+                var trackedTask = await _repo.GetTrackedByIdAsync(task.WorkItemID, ct);
+                if (trackedTask is null) continue;
+
+                await _repo.AssignToSprintAsync(trackedTask, req.SprintID, ct);
+
+                // Notify task assignee
+                if (trackedTask.AssignedUserID.HasValue && trackedTask.AssignedUserID.Value != userId.Value)
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = trackedTask.AssignedUserID.Value,
+                        RelatedWorkItemID = trackedTask.WorkItemID,
+                        RelatedSprintID = req.SprintID,
+                        NotificationType = "WorkItemAssignedToSprint",
+                        Message = $"Task '{trackedTask.Title}' was added to sprint '{sprint.SprintName}' (parent story '{workItem.Title}' was assigned).",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
+        }
+
+        // ── Send all notifications ──
+        if (notifications.Count > 0)
+        {
+            await _notifications.AddNotificationsAsync(notifications, ct);
+        }
+
+        // ── Broadcast to all clients for real-time updates ──
         await _hub.Clients.All.SendAsync("WorkItemAssignedToSprint", new
         {
             workItemID = workItem.WorkItemID,
@@ -676,6 +740,7 @@ public sealed class WorkItemsController : ControllerBase
             assignedUserID = workItem.AssignedUserID,
             sprintID = req.SprintID,
             sprintName = sprint.SprintName,
+            childTaskIDs = childTaskIds,
             changedAt = DateTimeHelper.Now
         }, ct);
 
@@ -683,10 +748,14 @@ public sealed class WorkItemsController : ControllerBase
         {
             message = "Work item assigned to sprint successfully.",
             workItemID = workItem.WorkItemID,
-            sprintID = req.SprintID
+            sprintID = req.SprintID,
+            childTasksAssigned = childTaskIds.Count
         });
     }
 
+    /// <summary>
+    /// Remove a work item from a sprint. If the item is a Story, all child Tasks are also batch-removed.
+    /// </summary>
     [HttpPut("{id:int}/remove-sprint")]
     [Authorize(AuthenticationSchemes = "MyCookieAuth")]
     public async Task<IActionResult> RemoveFromSprint([FromRoute] int id, CancellationToken ct)
@@ -731,52 +800,93 @@ public sealed class WorkItemsController : ControllerBase
         var oldSprintId = workItem.SprintID;
         await _repo.RemoveFromSprintAsync(workItem, ct);
 
-        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var notifications = new List<Notification>();
 
+        // Notify assignee of the primary item
+        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            notifications.Add(new Notification
+            {
+                UserID = workItem.AssignedUserID.Value,
+                RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = oldSprintId.Value,
+                NotificationType = "WorkItemRemovedFromSprint",
+                Message = $"Work item '{workItem.Title}' was removed from sprint '{sprint.SprintName}'.",
+                CreatedAt = DateTimeHelper.Now,
+                IsRead = false
+            });
+        }
+
+        // ── If this is a Story, batch-remove all child Tasks ──
+        var childTaskIds = new List<int>();
+        if (itemInfo.Value.WorkItemTypeID == storyTypeId.Value)
+        {
+            var childTasks = await _repo.GetChildTasksByParentIdAsync(workItem.WorkItemID, ct);
+
+            foreach (var task in childTasks)
+            {
+                if (task.SprintID != oldSprintId.Value)
+                    continue; // Task is not in this sprint
+
+                childTaskIds.Add(task.WorkItemID);
+
+                var trackedTask = await _repo.GetTrackedByIdAsync(task.WorkItemID, ct);
+                if (trackedTask is null) continue;
+
+                await _repo.RemoveFromSprintAsync(trackedTask, ct);
+
+                // Notify task assignee
+                if (trackedTask.AssignedUserID.HasValue && trackedTask.AssignedUserID.Value != userId.Value)
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = trackedTask.AssignedUserID.Value,
+                        RelatedWorkItemID = trackedTask.WorkItemID,
+                        RelatedSprintID = oldSprintId.Value,
+                        NotificationType = "WorkItemRemovedFromSprint",
+                        Message = $"Task '{trackedTask.Title}' was removed from sprint '{sprint.SprintName}' (parent story '{workItem.Title}' was removed).",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
+        }
+
+        // ── Audit log ──
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         await _audit.LogAsync(
             userId.Value,
             "WorkItem.RemoveFromSprint",
             "WorkItem",
             workItem.WorkItemID,
             true,
-            $"Removed WorkItemID={workItem.WorkItemID} from SprintID={oldSprintId}",
+            $"Removed WorkItemID={workItem.WorkItemID} from SprintID={oldSprintId}. Child tasks removed: {childTaskIds.Count}",
             ip,
             ct
         );
 
-        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        // ── Send all notifications ──
+        if (notifications.Count > 0)
         {
-            await _notifications.AddNotificationsAsync(new[]
-            {
-                new Notification
-                {
-                    UserID = workItem.AssignedUserID.Value,
-                    RelatedWorkItemID = workItem.WorkItemID,
-                    NotificationType = "WorkItemRemovedFromSprint",
-                    Message = $"Work item '{workItem.Title}' was removed from sprint '{sprint.SprintName}'.",
-                    CreatedAt = DateTimeHelper.Now,
-                    IsRead = false
-                }
-            }, ct);
+            await _notifications.AddNotificationsAsync(notifications, ct);
         }
 
-        // Broadcast sprint removal to ALL clients for real-time backlog/sprint list updates
-        if (oldSprintId.HasValue)
+        // ── Broadcast to all clients ──
+        await _hub.Clients.All.SendAsync("WorkItemRemovedFromSprint", new
         {
-            await _hub.Clients.All.SendAsync("WorkItemRemovedFromSprint", new
-            {
-                workItemID = workItem.WorkItemID,
-                title = workItem.Title,
-                oldSprintID = oldSprintId.Value,
-                oldSprintName = sprint.SprintName,
-                changedAt = DateTimeHelper.Now
-            }, ct);
-        }
+            workItemID = workItem.WorkItemID,
+            title = workItem.Title,
+            oldSprintID = oldSprintId.Value,
+            oldSprintName = sprint.SprintName,
+            childTaskIDs = childTaskIds,
+            changedAt = DateTimeHelper.Now
+        }, ct);
 
         return Ok(new
         {
             message = "Work item removed from sprint successfully.",
-            workItemID = workItem.WorkItemID
+            workItemID = workItem.WorkItemID,
+            childTasksRemoved = childTaskIds.Count
         });
     }
 
@@ -894,7 +1004,8 @@ public sealed class WorkItemsController : ControllerBase
             req.DueDate is not null ||
             req.ParentWorkItemID.HasValue ||
             req.TeamID.HasValue ||
-            req.AssignedUserID.HasValue;
+            req.AssignedUserID.HasValue ||
+            req.ClearAssignee == true;
 
         if (!hasAnyPatchField)
             return BadRequest(new { message = "At least one field must be provided." });
@@ -918,8 +1029,17 @@ public sealed class WorkItemsController : ControllerBase
 
         var isElevated = IsElevatedWorkItemRole();
 
-        // Check if user is trying to change restricted fields (assignee/team) without elevated role
-        if ((req.AssignedUserID.HasValue || req.TeamID.HasValue) && !isElevated)
+        // Determine if user is the Sprint Owner of the sprint this item belongs to
+        var isSprintOwner = false;
+        if (workItem.SprintID.HasValue)
+        {
+            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+            if (sprint is not null && sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId.Value)
+                isSprintOwner = true;
+        }
+
+        // ── Restricted fields (assignee/team): Admin/Scrum Master ONLY, but Sprint Owner can change assignee ──
+        if (req.TeamID.HasValue && !isElevated)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -927,16 +1047,58 @@ public sealed class WorkItemsController : ControllerBase
                 "WorkItem",
                 workItem.WorkItemID,
                 false,
-                $"Unauthorized: non-elevated user attempted to change assignee/team for WorkItemID={workItem.WorkItemID}",
+                $"Unauthorized: non-elevated user attempted to change team for WorkItemID={workItem.WorkItemID}",
                 ip,
                 ct);
 
-            return StatusCode(403, new { message = "Only administrators and scrum masters can change assignee or team." });
+            return StatusCode(403, new { message = "Only administrators and scrum masters can change team." });
         }
 
-        // Allow owner (assignee) or elevated role to update
+        // Assignee changes: Admin/SM always allowed; Sprint Owner allowed only for items in their sprint
+        // Only reject if the assignee is actually being CHANGED, not if the same value is sent back
+        var isAssigneeChanging = req.ClearAssignee == true
+            ? workItem.AssignedUserID.HasValue  // clearing when there was an assignee
+            : req.AssignedUserID.HasValue && workItem.AssignedUserID != req.AssignedUserID;  // changing to different user
+
+        if (isAssigneeChanging && !isElevated && !isSprintOwner)
+        {
+            await _audit.LogAsync(
+                userId.Value,
+                "WorkItem.Update",
+                "WorkItem",
+                workItem.WorkItemID,
+                false,
+                $"Unauthorized: non-elevated user attempted to change assignee for WorkItemID={workItem.WorkItemID}",
+                ip,
+                ct);
+
+            return StatusCode(403, new { message = "Only administrators, scrum masters, or the sprint owner can change assignee." });
+        }
+
+        // ── Priority changes: Admin/Scrum Master ONLY ──
+        // Only reject if the priority is actually being CHANGED, not if the same value is sent back
+        var normalizedPriority = req.Priority is not null ? NormalizePriority(req.Priority) : null;
+        if (req.Priority is not null && !isElevated && !string.Equals(workItem.Priority, normalizedPriority, StringComparison.OrdinalIgnoreCase))
+        {
+            await _audit.LogAsync(
+                userId.Value,
+                "WorkItem.Update",
+                "WorkItem",
+                workItem.WorkItemID,
+                false,
+                $"Unauthorized: non-elevated user attempted to change priority for WorkItemID={workItem.WorkItemID}",
+                ip,
+                ct);
+
+            return StatusCode(403, new { message = "Only administrators and scrum masters can change priority." });
+        }
+
+        // ── Authorization: who can update? ──
+        // 1. Admin/Scrum Master: full access
+        // 2. Assignee (owner): basic fields only
+        // 3. Sprint Owner: basic fields + status for items in their sprint
         var isOwner = workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value == userId.Value;
-        if (!isElevated && !isOwner)
+        if (!isElevated && !isOwner && !isSprintOwner)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -1033,6 +1195,16 @@ public sealed class WorkItemsController : ControllerBase
                 histories.Add(BuildHistory(workItem.WorkItemID, "AssignedUserID", workItem.AssignedUserID?.ToString(), req.AssignedUserID.Value.ToString(), userId.Value, now));
                 changedFields.Add($"AssignedUserID:{workItem.AssignedUserID}->{req.AssignedUserID.Value}");
                 workItem.AssignedUserID = req.AssignedUserID.Value;
+            }
+        }
+        else if (req.ClearAssignee == true)
+        {
+            // Explicitly clear the assignee
+            if (workItem.AssignedUserID.HasValue)
+            {
+                histories.Add(BuildHistory(workItem.WorkItemID, "AssignedUserID", workItem.AssignedUserID.Value.ToString(), null, userId.Value, now));
+                changedFields.Add($"AssignedUserID:{workItem.AssignedUserID}->null");
+                workItem.AssignedUserID = null;
             }
         }
 

@@ -17,5 +17,6 @@ export {
     canManageSprint,
     sprintManagerLabel,
     priorityAccentClass,
+    statusAccentClass,
     sprintStatusClass,
 } from './planningUtils';

@@ -39,6 +39,7 @@ import {
     canManageSprint,
     sprintManagerLabel,
     priorityAccentClass,
+    statusAccentClass,
     sprintStatusClass,
     TooltipIcon,
     useDebounced,
@@ -188,6 +189,14 @@ export default function BacklogsPage() {
 
     // Delete confirm
     const [deleteConfirmSprintId, setDeleteConfirmSprintId] = useState<number | null>(null);
+
+    // Drag to sprint confirmation
+    type DragConfirmState = { workItemId: number; sprintId: number };
+    const [dragConfirm, setDragConfirm] = useState<DragConfirmState | null>(null);
+
+    // Batch remove from sprint confirmation
+    type RemoveConfirmState = { workItemId: number; title: string };
+    const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmState | null>(null);
 
     const showStatus = useCallback((s: StatusState, ms = 4000) => {
         setPageStatus(s);
@@ -355,7 +364,13 @@ export default function BacklogsPage() {
     useEffect(() => {
         const conn = getBoardHubConnection();
         const onBoardEvent = (payload?: unknown) => {
-            scheduleRealtimeRefresh(sprintIdFromBoardPayload(payload));
+            const sprintId = sprintIdFromBoardPayload(payload);
+            // Directly refresh the specific sprint without debounce for immediate sync
+            if (sprintId !== undefined && expandedSprintIds.has(sprintId)) {
+                void refreshExpandedSprints([sprintId]);
+            }
+            // Also schedule a general debounce refresh for other sprints
+            scheduleRealtimeRefresh(sprintId);
         };
         const start = async () => {
             try { if (conn.state === 'Disconnected') await conn.start(); } catch { /* ignore */ }
@@ -365,7 +380,7 @@ export default function BacklogsPage() {
         return () => {
             BOARD_HUB_PLANNING_EVENTS.forEach(ev => conn.off(ev, onBoardEvent));
         };
-    }, [scheduleRealtimeRefresh]);
+    }, [expandedSprintIds, refreshExpandedSprints, scheduleRealtimeRefresh]);
 
     useEffect(() => {
         if (!me) return;
@@ -418,7 +433,13 @@ export default function BacklogsPage() {
         }
     }, [expandedSprintIds, showStatus]);
 
-    const handleAssignWorkItemDrop = useCallback(async (workItemId: number, sprintId: number) => {
+    const handleAssignWorkItemDrop = useCallback(async (workItemId: number, sprintId: number, typeName?: string) => {
+        // If it's a Story, show confirmation modal first
+        if (typeName?.toLowerCase() === 'story') {
+            setDragConfirm({ workItemId, sprintId });
+            return;
+        }
+        // For Tasks, assign directly
         try {
             await assignToSprint(workItemId, sprintId);
             showStatus({ kind: 'success', message: 'Work item assigned to sprint.' });
@@ -429,16 +450,90 @@ export default function BacklogsPage() {
         }
     }, [expandedSprintIds, loadBacklog, refreshExpandedSprints, showStatus]);
 
-    const handleRemoveFromSprint = useCallback(async (workItemId: number) => {
+    const confirmDragAssign = useCallback(async () => {
+        if (!dragConfirm) return;
+        const { workItemId, sprintId } = dragConfirm;
+        setDragConfirm(null);
+        try {
+            await assignToSprint(workItemId, sprintId);
+            showStatus({ kind: 'success', message: 'Story and child tasks assigned to sprint.' });
+            await loadBacklog();
+            if (expandedSprintIds.has(sprintId)) await refreshExpandedSprints([sprintId]);
+        } catch (err) {
+            showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to assign work item.' });
+        }
+    }, [dragConfirm, expandedSprintIds, loadBacklog, refreshExpandedSprints, showStatus]);
+
+    const handleRemoveFromSprint = useCallback(async (workItemId: number, typeName?: string) => {
+        // If it's a Story, show confirmation modal first
+        if (typeName?.toLowerCase() === 'story') {
+            // Find the item title for the confirmation message
+            const item = Object.values(sprintWorkItemsBySprint).flat().find(i => i.workItemID === workItemId);
+            setRemoveConfirm({ workItemId, title: item?.title ?? `Work Item #${workItemId}` });
+            return;
+        }
+
+        // For Tasks, remove directly
+        let targetSprintId: number | null = null;
+        for (const [sprintId, items] of Object.entries(sprintWorkItemsBySprint)) {
+            if (items.some(item => item.workItemID === workItemId)) {
+                targetSprintId = Number(sprintId);
+                break;
+            }
+        }
+
+        // Optimistic update: remove from local state immediately
+        const previousState = { ...sprintWorkItemsBySprint };
+        if (targetSprintId !== null) {
+            setSprintWorkItemsBySprint(prev => ({
+                ...prev,
+                [targetSprintId]: prev[targetSprintId]?.filter(item => item.workItemID !== workItemId) ?? []
+            }));
+        }
+
         try {
             await removeFromSprint(workItemId);
             showStatus({ kind: 'success', message: 'Work item returned to backlog.' });
             await loadBacklog();
             await refreshExpandedSprints();
         } catch (err) {
+            // Rollback on error
+            setSprintWorkItemsBySprint(previousState);
             showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to remove from sprint.' });
         }
-    }, [loadBacklog, refreshExpandedSprints, showStatus]);
+    }, [loadBacklog, refreshExpandedSprints, showStatus, sprintWorkItemsBySprint]);
+
+    const confirmRemoveAssign = useCallback(async () => {
+        if (!removeConfirm) return;
+        const { workItemId } = removeConfirm;
+        setRemoveConfirm(null);
+
+        let targetSprintId: number | null = null;
+        for (const [sprintId, items] of Object.entries(sprintWorkItemsBySprint)) {
+            if (items.some(item => item.workItemID === workItemId)) {
+                targetSprintId = Number(sprintId);
+                break;
+            }
+        }
+
+        const previousState = { ...sprintWorkItemsBySprint };
+        if (targetSprintId !== null) {
+            setSprintWorkItemsBySprint(prev => ({
+                ...prev,
+                [targetSprintId]: prev[targetSprintId]?.filter(item => item.workItemID !== workItemId) ?? []
+            }));
+        }
+
+        try {
+            await removeFromSprint(workItemId);
+            showStatus({ kind: 'success', message: 'Story and child tasks returned to backlog.' });
+            await loadBacklog();
+            await refreshExpandedSprints();
+        } catch (err) {
+            setSprintWorkItemsBySprint(previousState);
+            showStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Failed to remove from sprint.' });
+        }
+    }, [removeConfirm, loadBacklog, refreshExpandedSprints, showStatus, sprintWorkItemsBySprint]);
 
     // ── MANAGE SPRINT MODAL ────────────────────
     const [manageOpen, setManageOpen] = useState(false);
@@ -540,12 +635,32 @@ export default function BacklogsPage() {
     const selectAssignee = async (userID: number) => {
         if (assigneeTargetWorkItemId === null) return;
         setAssigneeLoading(true); setAssigneeError('');
+        
+        // Optimistic update: update local state immediately
+        const previousState = { ...sprintWorkItemsBySprint };
+        const user = assigneeUsers.find(u => u.userID === userID);
+        const userName = user?.displayName ?? me?.fullName ?? `User #${userID}`;
+        
+        setSprintWorkItemsBySprint(prev => {
+            const next = { ...prev };
+            Object.keys(next).forEach(sprintId => {
+                next[Number(sprintId)] = next[Number(sprintId)].map(item =>
+                    item.workItemID === assigneeTargetWorkItemId
+                        ? { ...item, assignedUserID: userID, assignedUserName: userName }
+                        : item
+                );
+            });
+            return next;
+        });
+        
         try {
             await updateWorkItem(assigneeTargetWorkItemId, { assignedUserID: userID });
             setAssigneePickerOpen(false); setAssigneeTargetWorkItemId(null);
             showStatus({ kind: 'success', message: 'Assignee updated.' });
             await loadBacklog(); await refreshExpandedSprints();
         } catch (err) {
+            // Rollback on error
+            setSprintWorkItemsBySprint(previousState);
             setAssigneeError(err instanceof Error ? err.message : 'Failed to update assignee.');
         } finally {
             setAssigneeLoading(false);
@@ -582,12 +697,18 @@ export default function BacklogsPage() {
                             </svg>
                             Add Item
                         </button>
-                        {addItemMenuOpen && (
-                            <AddItemMenu
-                                onSelect={t => { setAddItemTarget(t); setAddItemMenuOpen(false); }}
-                                onClose={() => setAddItemMenuOpen(false)}
-                            />
-                        )}
+                        {addItemMenuOpen && (() => {
+                            const isAdminOrSM = me?.roleName === 'Administrator' || me?.roleName === 'Scrum Master' || me?.roleName === 'ScrumMaster';
+                            return (
+                                <AddItemMenu
+                                    onSelect={t => { setAddItemTarget(t); setAddItemMenuOpen(false); }}
+                                    onClose={() => setAddItemMenuOpen(false)}
+                                    canCreateEpic={isAdminOrSM}
+                                    canCreateWorkItem={isAdminOrSM}
+                                    canCreateSprint={isAdminOrSM}
+                                />
+                            );
+                        })()}
                     </div>
                 </div>
             </div>
@@ -872,8 +993,9 @@ export default function BacklogsPage() {
                                                     if (dropDisabled) return;
                                                     e.preventDefault();
                                                     const raw = e.dataTransfer.getData('text/plain');
+                                                    const typeName = e.dataTransfer.getData('application/x-type-name') || '';
                                                     const id = raw ? Number(raw) : NaN;
-                                                    if (Number.isFinite(id) && id > 0) void handleAssignWorkItemDrop(id, s.sprintID);
+                                                    if (Number.isFinite(id) && id > 0) void handleAssignWorkItemDrop(id, s.sprintID, typeName || undefined);
                                                     setDragOverSprintId(null);
                                                 }}
                                             >
@@ -941,7 +1063,7 @@ export default function BacklogsPage() {
                                                         ) : (
                                                             <SprintWorkItemsList
                                                                 sprintWorkItems={sprintWorkItemsBySprint[s.sprintID] ?? []}
-                                                                onRemoveFromSprint={id => void handleRemoveFromSprint(id)}
+                                                                onRemoveFromSprint={(id, typeName) => void handleRemoveFromSprint(id, typeName)}
                                                                 me={me}
                                                                 canManage={canManage}
                                                                 onAssignAssignee={openAssigneePicker}
@@ -1249,12 +1371,27 @@ export default function BacklogsPage() {
             {detailItem && (() => {
                 const isAdminOrSM = me?.roleName === 'Administrator' || me?.roleName === 'Scrum Master' || me?.roleName === 'ScrumMaster';
                 const isOwner = detailItem.assignedUserID === me?.userID;
+                // Check if user is the Sprint Owner of the sprint this item belongs to
+                let isSprintOwner = false;
+                if (detailItem.sprintID && me?.userID) {
+                    const sprint = sprints.find(s => s.sprintID === detailItem.sprintID);
+                    if (sprint?.managedBy === me.userID) isSprintOwner = true;
+                }
+                const canManage = isAdminOrSM; // Only Admin/SM can change assignee/team/priority
+                const canEdit = isAdminOrSM || isOwner || isSprintOwner;
                 return (
                     <WorkItemDetailModal
                         item={detailItem}
                         onClose={() => setDetailItem(null)}
-                        canManage={isAdminOrSM}
-                        canEdit={isAdminOrSM || isOwner}
+                        onSaved={async () => {
+                            // Refresh the sprint work items if this item belongs to a sprint
+                            if (detailItem.sprintID) {
+                                await refreshExpandedSprints([detailItem.sprintID]);
+                            }
+                        }}
+                        canManage={canManage}
+                        canEdit={canEdit}
+                        canChangeAssignee={canManage || isSprintOwner}
                         currentUserId={me?.userID ?? null}
                     />
                 );
@@ -1271,6 +1408,46 @@ export default function BacklogsPage() {
                     }}
                 />
             )}
+
+            {/* Drag-to-sprint confirmation (Story + children) */}
+            {dragConfirm && (() => {
+                const story = backlogItems.find(i => i.workItemID === dragConfirm.workItemId)
+                    ?? Object.values(sprintWorkItemsBySprint).flat().find(i => i.workItemID === dragConfirm.workItemId);
+                return (
+                    <div className="wi-modal-overlay" role="dialog" aria-modal="true">
+                        <div className="confirm-modal-card">
+                            <h3 className="confirm-modal-title">Assign Story with Children?</h3>
+                            <p className="confirm-modal-message">
+                                Dragging <strong>"{story?.title}"</strong> into a sprint will also assign all its child tasks to the sprint.
+                                <br />Do you want to proceed?
+                            </p>
+                            <div className="confirm-modal-actions">
+                                <button type="button" className="btn btn-secondary" onClick={() => setDragConfirm(null)}>Cancel</button>
+                                <button type="button" className="btn btn-primary" onClick={() => void confirmDragAssign()}>Assign</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* Batch remove from sprint confirmation */}
+            {removeConfirm && (() => {
+                return (
+                    <div className="wi-modal-overlay" role="dialog" aria-modal="true">
+                        <div className="confirm-modal-card">
+                            <h3 className="confirm-modal-title">Remove Story with Children?</h3>
+                            <p className="confirm-modal-message">
+                                Removing <strong>"{removeConfirm.title}"</strong> from the sprint will also remove all its child tasks from the sprint.
+                                <br />Do you want to proceed?
+                            </p>
+                            <div className="confirm-modal-actions">
+                                <button type="button" className="btn btn-secondary" onClick={() => setRemoveConfirm(null)}>Cancel</button>
+                                <button type="button" className="btn btn-danger" onClick={() => void confirmRemoveAssign()}>Remove</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* Manage sprint modal */}
             {manageOpen && manageSprintId !== null && (
@@ -1331,6 +1508,7 @@ function BacklogItemRow({
             draggable
             onDragStart={e => {
                 e.dataTransfer.setData('text/plain', String(item.workItemID));
+                e.dataTransfer.setData('application/x-type-name', item.typeName ?? '');
                 e.dataTransfer.effectAllowed = 'move';
                 (e.currentTarget as HTMLElement).classList.add('backlog-item-row--dragging');
             }}
@@ -1367,11 +1545,11 @@ function BacklogItemRow({
 }
 
 // ─────────────────────────────────────────────
-// SPRINT WORK ITEMS LIST
+// SPRINT WORK ITEMS LIST (Compact single-row entries)
 // ─────────────────────────────────────────────
 function SprintWorkItemsList(props: {
     sprintWorkItems: AgendaWorkItem[];
-    onRemoveFromSprint: (workItemId: number) => void;
+    onRemoveFromSprint: (workItemId: number, typeName?: string) => void;
     me: UserProfile | null;
     canManage: boolean;
     onAssignAssignee: (workItemId: number) => void;
@@ -1401,38 +1579,50 @@ function SprintWorkItemsList(props: {
 
     const renderItem = (item: AgendaWorkItem, indent = false) => {
         const priorityCls = priorityAccentClass(item.priority);
+        const statusCls = statusAccentClass(item.status);
+        const assigneeName = item.assignedUserName
+            ? item.assignedUserName
+            : item.assignedUserID
+                ? `#${item.assignedUserID}`
+                : '';
+
         return (
-            <div key={item.workItemID} className={`sprint-wi-row${indent ? ' sprint-wi-row--child' : ''}`}>
-                <div
-                    className="sprint-wi-main"
+            <div
+                key={item.workItemID}
+                className={`sprint-wi-compact-row${indent ? ' sprint-wi-compact-row--child' : ''}`}
+            >
+                <span className={`wi-dot wi-dot--${(item.typeName ?? 'task').toLowerCase()}`} aria-hidden="true" />
+                <span
+                    className="sprint-wi-compact-title"
                     role="button"
                     tabIndex={0}
                     onClick={() => onOpenDetail(item)}
                     onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') onOpenDetail(item); }}
                 >
-                    <span className={`wi-dot wi-dot--${(item.typeName ?? 'task').toLowerCase()}`} aria-hidden="true" />
-                    <span className="sprint-wi-title">{item.title}</span>
-                    <span className={`wi-priority-chip ${priorityCls}`} style={{ marginLeft: 'auto' }}>{item.priority ?? '—'}</span>
-                </div>
-                <div className="sprint-wi-meta">
-                    <span className="badge-muted">{item.typeName}</span>
-                    <span className="badge-muted">{item.status}</span>
-                    {item.assignedUserID
-                        ? <span className="badge-muted">Assignee: #{item.assignedUserID}</span>
-                        : canManage
-                            ? <button type="button" className="add-assignee-link" onClick={() => onAssignAssignee(item.workItemID)}>+ Add Assignee</button>
-                            : <span className="badge-muted">Unassigned</span>
-                    }
-                    {canManage && (
-                        <button type="button" className="remove-link" onClick={() => onRemoveFromSprint(item.workItemID)}>Remove</button>
-                    )}
-                </div>
+                    {item.title}
+                </span>
+                <span className={`sprint-wi-compact-badge wi-status-chip ${statusCls}`}>{item.status}</span>
+                <span className={`sprint-wi-compact-badge wi-priority-chip ${priorityCls}`}>{item.priority ?? '—'}</span>
+                <span className="sprint-wi-compact-assignee">
+                    {assigneeName || (canManage ? <button type="button" className="add-assignee-link" onClick={() => onAssignAssignee(item.workItemID)}>+ Assign</button> : 'Unassigned')}
+                </span>
+                {canManage && (
+                    <button
+                        type="button"
+                        className="sprint-wi-remove-btn"
+                        onClick={() => onRemoveFromSprint(item.workItemID, item.typeName)}
+                        title="Remove from Sprint"
+                        aria-label={`Remove ${item.title} from sprint`}
+                    >
+                        ×
+                    </button>
+                )}
             </div>
         );
     };
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {stories.map(story => (
                 <div key={story.workItemID}>
                     {renderItem(story)}

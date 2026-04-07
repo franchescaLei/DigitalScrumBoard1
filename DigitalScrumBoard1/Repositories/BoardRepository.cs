@@ -24,6 +24,8 @@ public class BoardRepository : IBoardRepository
     public async Task<Sprint?> GetSprintAsync(int sprintId, CancellationToken ct)
     {
         return await _db.Sprints
+            .AsNoTracking()
+            .Include(s => s.Manager)
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
     }
 
@@ -32,6 +34,7 @@ public class BoardRepository : IBoardRepository
         return await _db.WorkItems
             .AsNoTracking()
             .Include(w => w.WorkItemType)
+            .Include(w => w.AssignedUser)
             .Where(w => w.SprintID == sprintId && !w.IsDeleted)
             .ToListAsync(ct);
     }

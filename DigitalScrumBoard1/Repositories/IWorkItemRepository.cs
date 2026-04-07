@@ -73,4 +73,6 @@ public interface IWorkItemRepository
         CancellationToken ct);
     
     Task<List<WorkItem>> GetWorkItemsBySprintIdAsync(int sprintId, CancellationToken ct);
+
+    Task<List<WorkItem>> GetChildTasksByParentIdAsync(int parentId, CancellationToken ct);
 }

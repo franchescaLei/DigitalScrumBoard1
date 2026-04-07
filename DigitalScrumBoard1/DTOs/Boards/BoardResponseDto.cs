@@ -6,6 +6,8 @@ public class BoardResponseDto
 
     public string SprintName { get; set; } = "";
 
+    public string? SprintManagerName { get; set; }
+
     public List<WorkItemBoardDto> Todo { get; set; } = new();
 
     public List<WorkItemBoardDto> Ongoing { get; set; } = new();
@@ -23,5 +25,13 @@ public class WorkItemBoardDto
 
     public string Status { get; set; } = "";
 
+    public string? TypeName { get; set; }
+
+    public string? Priority { get; set; }
+
     public int? AssignedUserID { get; set; }
+
+    public string? AssignedUserName { get; set; }
+
+    public int CommentCount { get; set; }
 }

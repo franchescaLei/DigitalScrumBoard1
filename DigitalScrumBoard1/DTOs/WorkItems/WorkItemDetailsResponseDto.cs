@@ -20,6 +20,9 @@ public sealed class WorkItemDetailsResponseDto
     public int? AssignedUserID { get; set; }
     public string? AssignedUserName { get; set; }
 
+    public int? SprintID { get; set; }
+    public string? SprintName { get; set; }
+
     public List<WorkItemCommentDto> Comments { get; set; } = new();
     public List<WorkItemChildDto> Stories { get; set; } = new();
     public List<WorkItemChildDto> Tasks { get; set; } = new();

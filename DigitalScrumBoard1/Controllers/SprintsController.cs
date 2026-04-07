@@ -746,8 +746,9 @@ public sealed class SprintsController : ControllerBase
         if (userId is null)
             return Unauthorized(new { message = "Missing/invalid user identity." });
 
-        if (!CanManageSprint(userId.Value, sprint.ManagedBy))
-            return BadRequest(new { message = "You do not have permission to delete this sprint. Only Administrators, Scrum Masters, or the sprint manager can delete sprints." });
+        // Only Administrators and Scrum Masters can delete sprints (not Sprint Owners)
+        if (!IsElevatedSprintRole())
+            return BadRequest(new { message = "You do not have permission to delete this sprint. Only Administrators and Scrum Masters can delete sprints." });
 
         // Get affected user IDs before deletion for notification
         var affectedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);

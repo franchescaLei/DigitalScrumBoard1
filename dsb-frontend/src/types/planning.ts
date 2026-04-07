@@ -31,6 +31,7 @@ export type AgendaWorkItem = {
     sprintID: number | null;
     teamID: number | null;
     assignedUserID: number | null;
+    assignedUserName?: string | null;
     epicID?: number | null;
     description?: string | null;
 };
@@ -50,6 +51,8 @@ export type WorkItemDetails = {
     teamName?: string | null;
     assignedUserID: number | null;
     assignedUserName?: string | null;
+    sprintID: number | null;
+    sprintName?: string | null;
     comments: Array<{
         commentID: number;
         workItemID: number;

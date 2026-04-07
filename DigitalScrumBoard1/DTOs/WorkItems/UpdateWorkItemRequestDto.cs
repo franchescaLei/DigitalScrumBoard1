@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace DigitalScrumBoard1.DTOs.WorkItems;
 
@@ -18,6 +19,13 @@ public sealed class UpdateWorkItemRequestDto
     public int? TeamID { get; set; }
 
     public int? AssignedUserID { get; set; }
+
+    /// <summary>
+    /// When true, explicitly clears the assignee (sets to null).
+    /// Use this instead of sending AssignedUserID=null which is indistinguishable from "not provided".
+    /// </summary>
+    [JsonPropertyName("clearAssignee")]
+    public bool? ClearAssignee { get; set; }
 
     public DateOnly? DueDate { get; set; }
 }

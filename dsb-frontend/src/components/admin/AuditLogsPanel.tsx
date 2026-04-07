@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import '../../styles/admin.css';
 import {
     downloadAuditLogsCsv,
@@ -8,6 +8,7 @@ import {
 } from '../../api/auditLogsApi';
 import { ApiError } from '../../services/apiClient';
 import { formatDateTime } from '../../utils/dateFormatter';
+import { Pagination } from '../common/Pagination';
 
 function truncate(s: string, max: number): string {
     if (s.length <= max) return s;
@@ -24,7 +25,7 @@ export function AuditLogsPanel() {
     const [targetId, setTargetId] = useState('');
     const [ipAddress, setIpAddress] = useState('');
     const [page, setPage] = useState(1);
-    const pageSize = 50;
+    const [pageSize, setPageSize] = useState(50);
 
     const [rows, setRows] = useState<AuditLogRow[]>([]);
     const [total, setTotal] = useState(0);
@@ -33,6 +34,10 @@ export function AuditLogsPanel() {
     const [exporting, setExporting] = useState(false);
     /** Bumps when filters are applied so we refetch even if page was already 1. */
     const [reloadKey, setReloadKey] = useState(0);
+    /** Preserve scroll position when changing pages. */
+    const tableContainerRef = useRef<HTMLDivElement>(null);
+    /** Track if this is the initial load (to show loading indicator) vs pagination (keep showing old data). */
+    const [isInitialLoad, setIsInitialLoad] = useState(true);
 
     const buildQuery = useCallback((): AuditLogQuery => {
         const q: AuditLogQuery = { page, pageSize };
@@ -48,23 +53,38 @@ export function AuditLogsPanel() {
         if (!Number.isNaN(tid)) q.targetId = tid;
         if (ipAddress.trim()) q.ipAddress = ipAddress.trim();
         return q;
-    }, [userId, action, successFilter, from, to, targetType, targetId, ipAddress, page]);
+    }, [userId, action, successFilter, from, to, targetType, targetId, ipAddress, page, pageSize]);
 
     const load = useCallback(async () => {
-        setLoading(true);
+        // Preserve scroll position before data changes
+        const container = tableContainerRef.current;
+        const scrollTop = container?.scrollTop ?? 0;
+
+        // Only show full-screen loading on initial load
+        if (isInitialLoad) {
+            setLoading(true);
+        }
         setError(null);
         try {
             const res = await fetchAuditLogs(buildQuery());
             setRows(res.items);
             setTotal(res.total);
+
+            // Restore scroll position after DOM updates
+            requestAnimationFrame(() => {
+                if (container) {
+                    container.scrollTop = scrollTop;
+                }
+            });
         } catch (e) {
             setRows([]);
             setTotal(0);
             setError(e instanceof ApiError ? e.message : 'Failed to load audit logs.');
         } finally {
             setLoading(false);
+            setIsInitialLoad(false);
         }
-    }, [buildQuery]);
+    }, [buildQuery, isInitialLoad]);
 
     useEffect(() => {
         void load();
@@ -88,8 +108,6 @@ export function AuditLogsPanel() {
             setExporting(false);
         }
     };
-
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
     return (
         <div className="app-animate-in">
@@ -236,16 +254,37 @@ export function AuditLogsPanel() {
                 </div>
             )}
 
-            <div className="app-card" style={{ overflow: 'auto' }}>
-                {loading ? (
+            <div className="app-card" ref={tableContainerRef} style={{ overflow: 'auto' }}>
+                {isInitialLoad && loading ? (
                     <p style={{ margin: 0, color: 'var(--page-sub-color)' }}>Loading…</p>
-                ) : rows.length === 0 ? (
+                ) : rows.length === 0 && !loading ? (
                     <div className="empty-state" style={{ padding: '32px 0' }}>
                         <h3 style={{ marginBottom: 8 }}>No rows</h3>
                         <p style={{ margin: 0 }}>Adjust filters or change page.</p>
                     </div>
                 ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
+                    <div style={{ position: 'relative' }}>
+                        {loading && (
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    padding: '8px 12px',
+                                    background: 'var(--accent-gold-light)',
+                                    color: 'var(--accent-gold)',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    textAlign: 'center',
+                                    zIndex: 10,
+                                    borderBottom: '1px solid var(--accent-gold)',
+                                }}
+                            >
+                                Loading…
+                            </div>
+                        )}
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
                         <thead>
                             <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--divider)' }}>
                                 <th style={{ padding: '8px 10px' }}>Time (PHT)</th>
@@ -280,41 +319,18 @@ export function AuditLogsPanel() {
                             ))}
                         </tbody>
                     </table>
+                    </div>
                 )}
 
-                {!loading && total > 0 && (
-                    <div
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            marginTop: 16,
-                            gap: 12,
-                            flexWrap: 'wrap',
-                        }}
-                    >
-                        <span style={{ color: 'var(--page-sub-color)', fontSize: '0.8125rem' }}>
-                            Page {page} of {totalPages} · {total} total
-                        </span>
-                        <div style={{ display: 'flex', gap: 8 }}>
-                            <button
-                                type="button"
-                                className="btn btn-secondary"
-                                disabled={page <= 1}
-                                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                            >
-                                Previous
-                            </button>
-                            <button
-                                type="button"
-                                className="btn btn-secondary"
-                                disabled={page >= totalPages}
-                                onClick={() => setPage((p) => p + 1)}
-                            >
-                                Next
-                            </button>
-                        </div>
-                    </div>
+                {total > 0 && (
+                    <Pagination
+                        currentPage={page}
+                        pageSize={pageSize}
+                        total={total}
+                        onPageChange={setPage}
+                        onPageSizeChange={setPageSize}
+                        pageSizeOptions={[10, 25, 50, 100]}
+                    />
                 )}
             </div>
         </div>

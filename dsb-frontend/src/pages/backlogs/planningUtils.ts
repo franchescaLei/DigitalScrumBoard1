@@ -34,6 +34,21 @@ export function priorityAccentClass(priority: string | null | undefined): string
     }
 }
 
+export function statusAccentClass(status: string | null | undefined): string {
+    switch ((status ?? '').toLowerCase()) {
+        case 'todo': return 'wi-status--todo';
+        case 'ongoing':
+        case 'inprogress':
+        case 'in progress': return 'wi-status--ongoing';
+        case 'forchecking':
+        case 'for checking':
+        case 'review': return 'wi-status--review';
+        case 'completed':
+        case 'done': return 'wi-status--completed';
+        default: return 'wi-status--default';
+    }
+}
+
 export function sprintStatusClass(status: string): string {
     switch (status.toLowerCase()) {
         case 'active': return 'sprint-badge--active';

@@ -86,6 +86,7 @@ interface WorkItemDetails extends AgendaWorkItem {
     parentTitle?: string | null;
     teamName?: string | null;
     assignedUserName?: string | null;
+    sprintName?: string | null;
     createdAt?: string | null;
 }
 
@@ -324,14 +325,18 @@ function PickerModal({
 export function WorkItemDetailModal({
     item,
     onClose,
+    onSaved,
     canManage = false,
     canEdit = false,
+    canChangeAssignee = false,
     currentUserId = null,
 }: {
     item: AgendaWorkItem;
     onClose: () => void;
+    onSaved?: () => void;
     canManage?: boolean;
     canEdit?: boolean;
+    canChangeAssignee?: boolean;
     currentUserId?: number | null;
 }) {
     // ── State ──────────────────────────────────
@@ -602,9 +607,15 @@ export function WorkItemDetailModal({
             };
             if (editDueDate) payload.dueDate = editDueDate;
             else payload.dueDate = null;
+            if (canChangeAssignee) {
+                if (editAssignee) {
+                    payload.assignedUserID = editAssignee;
+                } else if (editAssignee === null && item.assignedUserID !== null) {
+                    // User explicitly cleared the assignee
+                    payload.clearAssignee = true;
+                }
+            }
             if (canManage) {
-                if (editAssignee) payload.assignedUserID = editAssignee;
-                else payload.assignedUserID = null;
                 if (editTeam) payload.teamID = editTeam;
                 else payload.teamID = null;
             }
@@ -612,6 +623,8 @@ export function WorkItemDetailModal({
             setIsEditing(false);
             setSaveSuccess(true);
             setTimeout(() => setSaveSuccess(false), 3000);
+            // Notify parent component to refresh
+            onSaved?.();
         } catch (err) {
             const e = err as { message?: string };
             setSaveError(e?.message ?? 'Failed to save changes.');
@@ -658,8 +671,15 @@ export function WorkItemDetailModal({
         }
     }, [item.workItemID]);
 
-    // ── Derived display values ─────────────────
-    const displayed = details ?? item as WorkItemDetails;
+    // ── Derived display values (merge details with initial item for fallback) ──
+    const displayed: WorkItemDetails = details
+        ? {
+            ...details,
+            // Fallback to initial item's sprintID if details doesn't include it
+            sprintID: details.sprintID ?? item.sprintID ?? null,
+            sprintName: details.sprintName ?? null,
+        }
+        : item as WorkItemDetails;
     const priorityCls = priorityAccentClass(isEditing ? editFields.priority : (displayed.priority ?? null));
     const typeLower = (displayed.typeName ?? 'task').toLowerCase();
     const comments = displayed.comments ?? [];
@@ -726,7 +746,7 @@ export function WorkItemDetailModal({
                         <div className="wi-sidebar-row">
                             <div className="wi-sidebar-field">
                                 <span className="wi-sidebar-field-label">Priority</span>
-                                {isEditing ? (
+                                {isEditing && canManage ? (
                                     <select
                                         className="wi-sidebar-select"
                                         value={editFields.priority}
@@ -782,14 +802,19 @@ export function WorkItemDetailModal({
                         <div className="wi-sidebar-field wi-sidebar-field--full">
                             <span className="wi-sidebar-field-label">Sprint</span>
                             <span className="wi-sidebar-field-value">
-                                {displayed.sprintID ? `Sprint #${displayed.sprintID}` : 'Unassigned'}
+                                {displayed.sprintName
+                                    ? displayed.sprintName
+                                    : displayed.sprintID
+                                        ? `Sprint #${displayed.sprintID}`
+                                        : 'Unassigned'
+                                }
                             </span>
                         </div>
 
                         {/* Assignee */}
                         <div className="wi-sidebar-field wi-sidebar-field--full">
                             <span className="wi-sidebar-field-label">Assignee</span>
-                            {isEditing && canManage ? (
+                            {isEditing && canChangeAssignee ? (
                                 <div className="wi-assignee-row">
                                     <span className="wi-sidebar-field-value">
                                         {editAssigneeName || 'Unassigned'}

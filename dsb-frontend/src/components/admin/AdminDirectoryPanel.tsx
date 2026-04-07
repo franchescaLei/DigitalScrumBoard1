@@ -665,7 +665,7 @@ function TeamManagementTab({ users, teams, onAssignTeam, onRemoveFromTeam, onCre
     const [creatingTeam, setCreatingTeam] = useState(false);
     const [newTeamName, setNewTeamName] = useState('');
     const [newTeamError, setNewTeamError] = useState('');
-    const [expandedTeamId, setExpandedTeamId] = useState<number | null>(null);
+    const [expandedTeamIds, setExpandedTeamIds] = useState<Set<number>>(() => new Set());
     const [banner, setBanner] = useState<TeamMgmtBanner | null>(null);
     const [openMovePickerKey, setOpenMovePickerKey] = useState<string | null>(null);
     const defaultTeamId = useMemo(() => getDefaultTeamId(teams), [teams]);
@@ -677,10 +677,15 @@ function TeamManagementTab({ users, teams, onAssignTeam, onRemoveFromTeam, onCre
     );
 
     useEffect(() => {
-        setExpandedTeamId((prev) => {
-            if (displayTeams.length === 0) return null;
-            if (prev !== null && displayTeams.some((t) => t.id === prev)) return prev;
-            return displayTeams[0].id;
+        setExpandedTeamIds((prev) => {
+            if (displayTeams.length === 0) return new Set();
+            if (prev.size > 0) {
+                // Keep only teams that still exist
+                const valid = new Set([...prev].filter((id) => displayTeams.some((t) => t.id === id)));
+                return valid;
+            }
+            // Expand first team by default on initial load
+            return new Set([displayTeams[0].id]);
         });
     }, [displayTeams]);
 
@@ -843,16 +848,24 @@ function TeamManagementTab({ users, teams, onAssignTeam, onRemoveFromTeam, onCre
                 <div className="tm-grid">
                     {displayTeams.map((team) => {
                         const members = users.filter((u) => u.teamID != null && u.teamID === team.id);
-                        const isExpanded = expandedTeamId === team.id;
+                        const isExpanded = expandedTeamIds.has(team.id);
                         const moveTargets = displayTeams.filter((t) => t.id !== team.id);
 
                         return (
                             <div key={team.id} className={`tm-card${isExpanded ? ' tm-card--expanded' : ''}`}>
                                 <button
                                     className="tm-card-header"
-                                    onClick={() =>
-                                        setExpandedTeamId(isExpanded ? null : team.id)
-                                    }
+                                    onClick={() => {
+                                        setExpandedTeamIds((prev) => {
+                                            const next = new Set(prev);
+                                            if (next.has(team.id)) {
+                                                next.delete(team.id);
+                                            } else {
+                                                next.add(team.id);
+                                            }
+                                            return next;
+                                        });
+                                    }}
                                     aria-expanded={isExpanded}
                                 >
                                     <div className="tm-card-title">

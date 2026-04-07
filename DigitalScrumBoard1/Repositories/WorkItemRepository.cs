@@ -220,6 +220,8 @@ public sealed class WorkItemRepository : IWorkItemRepository
         var dto = await (
             from w in _db.WorkItems.AsNoTracking()
             join wt in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals wt.WorkItemTypeID
+            join sp in _db.Sprints.AsNoTracking() on w.SprintID equals sp.SprintID into spj
+            from sp in spj.DefaultIfEmpty()
             join p in _db.WorkItems.AsNoTracking() on w.ParentWorkItemID equals p.WorkItemID into pj
             from p in pj.DefaultIfEmpty()
             join t in _db.Teams.AsNoTracking() on w.TeamID equals t.TeamID into tj
@@ -241,7 +243,9 @@ public sealed class WorkItemRepository : IWorkItemRepository
                 TeamID = w.TeamID,
                 TeamName = t != null ? t.TeamName : null,
                 AssignedUserID = w.AssignedUserID,
-                AssignedUserName = u != null ? (u.FirstName + " " + u.LastName).Trim() : null
+                AssignedUserName = u != null ? (u.FirstName + " " + u.LastName).Trim() : null,
+                SprintID = w.SprintID,
+                SprintName = sp != null ? sp.SprintName : null
             })
             .FirstOrDefaultAsync(ct);
 
@@ -936,6 +940,16 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .Include(w => w.AssignedUser)
             .Where(w => w.SprintID == sprintId && !w.IsDeleted)
             .OrderBy(w => w.CreatedAt)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<WorkItem>> GetChildTasksByParentIdAsync(int parentId, CancellationToken ct)
+    {
+        return await _db.WorkItems
+            .AsNoTracking()
+            .Include(w => w.WorkItemType)
+            .Include(w => w.AssignedUser)
+            .Where(w => w.ParentWorkItemID == parentId && !w.IsDeleted)
             .ToListAsync(ct);
     }
 }
