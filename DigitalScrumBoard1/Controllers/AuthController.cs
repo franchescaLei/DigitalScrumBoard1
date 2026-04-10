@@ -23,6 +23,7 @@ namespace DigitalScrumBoard1.Controllers
         private readonly IAuditService _audit;
         private readonly IAuthEmailService _authEmail;
         private readonly IHubContext<NotificationHub> _notifyHub;
+        private readonly IConfiguration _configuration;
 
         private const int RateLimitStartsAtFailedAttempt = 5;
         private const int AccountLockoutFailedAttempt = 8;
@@ -37,12 +38,14 @@ namespace DigitalScrumBoard1.Controllers
             DigitalScrumBoardContext db,
             IAuditService audit,
             IAuthEmailService authEmail,
-            IHubContext<NotificationHub> notifyHub)
+            IHubContext<NotificationHub> notifyHub,
+            IConfiguration configuration)
         {
             _db = db;
             _audit = audit;
             _authEmail = authEmail;
             _notifyHub = notifyHub;
+            _configuration = configuration;
         }
 
         [HttpPost("login")]
@@ -347,6 +350,47 @@ namespace DigitalScrumBoard1.Controllers
             await _audit.LogAsync(row.User.UserID, "VERIFY_EMAIL", "User", row.User.UserID, true, "Email verified.", ip, ct);
 
             return Ok(new { message = "Email verified successfully." });
+        }
+
+        [HttpGet("verify-email-redirect")]
+        [AllowAnonymous]
+        public async Task<IActionResult> VerifyEmailAndRedirect([FromQuery] string token, CancellationToken ct)
+        {
+            var frontendUrl = (_configuration.GetValue<string>("Email:AppBaseUrl") ?? "http://localhost:7120").TrimEnd('/');
+            
+            if (string.IsNullOrWhiteSpace(token))
+                return Redirect($"{frontendUrl}/verify-email?error=invalid_token");
+
+            var tokenHash = EmailVerificationTokenFactory.HashToken(token);
+
+            var row = await _db.EmailVerificationTokens
+                .Include(t => t.User)
+                .AsTracking()
+                .Where(t => t.TokenHash == tokenHash)
+                .OrderByDescending(t => t.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+                return Redirect($"{frontendUrl}/verify-email?error=invalid_token");
+
+            if (row.UsedAt is not null)
+                return Redirect($"{frontendUrl}/verify-email?error=already_used");
+
+            if (DateTimeHelper.Now > row.ExpiresAt)
+                return Redirect($"{frontendUrl}/verify-email?error=expired_token");
+
+            // Mark token as used and verify email
+            row.UsedAt = DateTimeHelper.Now;
+            row.User.EmailVerified = true;
+            row.User.UpdatedAt = DateTimeHelper.Now;
+
+            await _db.SaveChangesAsync(ct);
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(row.User.UserID, "VERIFY_EMAIL", "User", row.User.UserID, true, "Email verified.", ip, ct);
+
+            // Redirect to the email verified success page
+            return Redirect($"{frontendUrl}/email-verified");
         }
 
         [HttpPost("resend-verification")]

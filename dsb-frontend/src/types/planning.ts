@@ -91,6 +91,8 @@ export type SprintSummary = {
     /** Display name from server when manager user is loaded; otherwise omit. */
     managedByName?: string | null;
     teamID: number | null;
+    /** Team name from server when available. */
+    teamName?: string | null;
     createdAt?: string | null;
     updatedAt?: string | null;
     /** Work items of type Story in this sprint (from list API). */

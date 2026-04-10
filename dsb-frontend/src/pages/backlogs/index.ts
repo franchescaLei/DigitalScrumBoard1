@@ -9,6 +9,7 @@ export { CreateWorkItemModal } from './CreateWorkItemModal';
 export { DeleteSprintConfirmModal } from './DeleteSprintConfirmModal';
 export { ManageSprintModal } from './ManageSprintModal';
 export { WorkItemDetailModal } from './WorkItemDetailModal';
+export { ViewEpicModal } from './ViewEpicModal';
 export {
     STORY_TYPE,
     TASK_TYPE,

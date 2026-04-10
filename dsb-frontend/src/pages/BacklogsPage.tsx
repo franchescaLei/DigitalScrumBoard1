@@ -31,6 +31,7 @@ import {
     CreateWorkItemModal,
     DeleteSprintConfirmModal,
     ManageSprintModal,
+    ViewEpicModal,
     WorkItemDetailModal,
     STORY_TYPE,
     TASK_TYPE,
@@ -39,13 +40,12 @@ import {
     canManageSprint,
     sprintManagerLabel,
     priorityAccentClass,
-    statusAccentClass,
     sprintStatusClass,
     TooltipIcon,
     useDebounced,
     type AddItemTarget,
 } from './backlogs';
-import { getBoardHubConnection } from '../services/boardHub';
+import { getBoardHubConnection, ensureBoardHubStarted } from '../services/boardHub';
 import { getNotificationHubConnection } from '../services/notificationHub';
 import * as signalR from '@microsoft/signalr';
 import '../styles/admin.css';
@@ -88,21 +88,6 @@ function relatedSprintIdFromNotification(dto: unknown): number | undefined {
     return typeof sid === 'number' && sid > 0 ? sid : undefined;
 }
 
-const BOARD_HUB_PLANNING_EVENTS = [
-    'SprintCreated',
-    'SprintUpdated',
-    'SprintStarted',
-    'SprintStopped',
-    'SprintCompleted',
-    'SprintDeleted',
-    'WorkItemCreated',
-    'WorkItemAssignedToSprint',
-    'WorkItemRemovedFromSprint',
-    'WorkItemUpdated',
-    'WorkItemDeleted',
-    'WorkItemStatusChanged',
-] as const;
-
 type StatusState =
     | { kind: 'none' }
     | { kind: 'error'; message: string }
@@ -139,7 +124,7 @@ export default function BacklogsPage() {
     const [epicSortDirection, setEpicSortDirection] = useState<'asc' | 'desc' | ''>('');
     const [epicFilter, setEpicFilter] = useState<'all' | 'inProgress'>('all');
 
-    const [selectedEpicId, setSelectedEpicId] = useState<number | null>(null);
+    const [viewEpicId, setViewEpicId] = useState<number | null>(null);
 
     const [sprints, setSprints] = useState<SprintSummary[]>([]);
     const [sprintsLoading, setSprintsLoading] = useState(true);
@@ -361,24 +346,119 @@ export default function BacklogsPage() {
         }, 150);
     }, [expandedSprintIds, loadBacklog, loadEpics, loadSprints, refreshExpandedSprints]);
 
+    // ── Board Hub: real-time work item & sprint events ──────────
     useEffect(() => {
         const conn = getBoardHubConnection();
-        const onBoardEvent = (payload?: unknown) => {
-            const sprintId = sprintIdFromBoardPayload(payload);
-            // Directly refresh the specific sprint without debounce for immediate sync
-            if (sprintId !== undefined && expandedSprintIds.has(sprintId)) {
-                void refreshExpandedSprints([sprintId]);
+
+        // Events that require a full sprint refetch (sprint-level changes)
+        const FULL_REFRESH_EVENTS = [
+            'SprintCreated',
+            'SprintUpdated',
+            'SprintStarted',
+            'SprintStopped',
+            'SprintCompleted',
+            'SprintDeleted',
+        ] as const;
+
+        // Events that can be handled by direct in-place state updates
+        const INCREMENTAL_EVENTS = [
+            'WorkItemCreated',
+            'WorkItemAssignedToSprint',
+            'WorkItemRemovedFromSprint',
+            'WorkItemUpdated',
+            'WorkItemDeleted',
+            'WorkItemStatusChanged',
+            'WorkItemMoved',
+        ] as const;
+
+        let cancelled = false;
+
+        const handleIncrementalWorkItemEvent = (eventType: string, payload: unknown) => {
+            if (payload === null || typeof payload !== 'object') return;
+            const data = payload as Record<string, unknown>;
+            const workItemId = Number(data.workItemID ?? data.WorkItemID ?? 0);
+            if (!workItemId || workItemId <= 0) return;
+
+            const sprintId = sprintIdFromBoardPayload(data);
+
+            if (eventType === 'WorkItemRemovedFromSprint' || eventType === 'WorkItemDeleted') {
+                // Remove the item from all sprint work item lists
+                setSprintWorkItemsBySprint(prev => {
+                    const next: Record<number, AgendaWorkItem[]> = {};
+                    for (const [key, items] of Object.entries(prev)) {
+                        const filtered = items.filter(i => i.workItemID !== workItemId);
+                        if (filtered.length > 0) next[Number(key)] = filtered;
+                    }
+                    return next;
+                });
+                return;
             }
-            // Also schedule a general debounce refresh for other sprints
-            scheduleRealtimeRefresh(sprintId);
+
+            if (eventType === 'WorkItemCreated' || eventType === 'WorkItemAssignedToSprint') {
+                // For new assignments/creations, do a targeted refresh of that sprint
+                if (sprintId !== undefined && expandedSprintIds.has(sprintId)) {
+                    void refreshExpandedSprints([sprintId]);
+                }
+                return;
+            }
+
+            // WorkItemUpdated, WorkItemStatusChanged, WorkItemMoved — merge into existing sprint lists
+            if (eventType === 'WorkItemUpdated' || eventType === 'WorkItemStatusChanged' || eventType === 'WorkItemMoved') {
+                const updatedFields: Partial<AgendaWorkItem> = {};
+                // WorkItemUpdated/WorkItemMoved use `status`, WorkItemStatusChanged uses `newStatus`
+                const resolvedStatus = data.newStatus ?? data.status;
+                if (resolvedStatus !== undefined) updatedFields.status = String(resolvedStatus);
+                if (data.assignedUserID !== undefined) updatedFields.assignedUserID = data.assignedUserID as number | null;
+                if (data.assignedUserName !== undefined) updatedFields.assignedUserName = data.assignedUserName as string | null;
+                if (data.priority !== undefined) updatedFields.priority = data.priority as string | null;
+                if (data.dueDate !== undefined) updatedFields.dueDate = data.dueDate as string | null;
+                if (data.title !== undefined) updatedFields.title = String(data.title);
+                // WorkItemMoved may include type info
+                if (data.workItemType !== undefined) updatedFields.typeName = String(data.workItemType);
+                if (data.parentWorkItemID !== undefined) updatedFields.parentWorkItemID = data.parentWorkItemID as number | null;
+                if (data.teamID !== undefined) updatedFields.teamID = data.teamID as number | null;
+
+                if (Object.keys(updatedFields).length === 0) return;
+
+                setSprintWorkItemsBySprint(prev => {
+                    const next: Record<number, AgendaWorkItem[]> = {};
+                    for (const [key, items] of Object.entries(prev)) {
+                        const updated = items.map(i =>
+                            i.workItemID === workItemId ? { ...i, ...updatedFields } : i
+                        );
+                        next[Number(key)] = updated;
+                    }
+                    return next;
+                });
+                return;
+            }
         };
+
         const start = async () => {
-            try { if (conn.state === 'Disconnected') await conn.start(); } catch { /* ignore */ }
-            BOARD_HUB_PLANNING_EVENTS.forEach(ev => conn.on(ev, onBoardEvent));
+            try {
+                await ensureBoardHubStarted();
+            } catch {
+                return;
+            }
+            if (cancelled) return;
+
+            FULL_REFRESH_EVENTS.forEach(ev => conn.on(ev, () => scheduleRealtimeRefresh()));
+
+            INCREMENTAL_EVENTS.forEach(ev => {
+                conn.on(ev, (payload) => {
+                    handleIncrementalWorkItemEvent(ev, payload);
+                    // Also schedule a debounced refresh as a safety net
+                    const sprintId = sprintIdFromBoardPayload(payload);
+                    scheduleRealtimeRefresh(sprintId);
+                });
+            });
         };
+
         void start();
         return () => {
-            BOARD_HUB_PLANNING_EVENTS.forEach(ev => conn.off(ev, onBoardEvent));
+            cancelled = true;
+            FULL_REFRESH_EVENTS.forEach(ev => conn.off(ev));
+            INCREMENTAL_EVENTS.forEach(ev => conn.off(ev));
         };
     }, [expandedSprintIds, refreshExpandedSprints, scheduleRealtimeRefresh]);
 
@@ -546,18 +626,27 @@ export default function BacklogsPage() {
     const [manageEndDate, setManageEndDate] = useState('');
     const [manageManagedBy, setManageManagedBy] = useState<number | null>(null);
     const [manageTeamId, setManageTeamId] = useState<number | null>(null);
+    const [manageSprintData, setManageSprintData] = useState<SprintSummary | null>(null);
 
     const resetManage = () => {
         setManageOpen(false); setManageSprintId(null); setManageLoading(false); setManageError('');
         setManageSprintName(''); setManageGoal(''); setManageStartDate(''); setManageEndDate('');
         setManageManagedBy(null); setManageTeamId(null);
+        setManageSprintData(null);
     };
 
     const openManageFor = async (sprint: SprintSummary) => {
-        setManageSprintId(sprint.sprintID); setManageSprintName(sprint.sprintName);
-        setManageGoal(sprint.goal ?? ''); setManageStartDate(sprint.startDate ?? '');
-        setManageEndDate(sprint.endDate ?? ''); setManageManagedBy(sprint.managedBy);
-        setManageTeamId(sprint.teamID); setManageError(''); setManageOpen(true);
+        setManageSprintId(sprint.sprintID);
+        setManageSprintName(sprint.sprintName);
+        setManageGoal(sprint.goal ?? '');
+        setManageStartDate(sprint.startDate ?? '');
+        setManageEndDate(sprint.endDate ?? '');
+        setManageManagedBy(sprint.managedBy);
+        setManageTeamId(sprint.teamID);
+        setManageError('');
+        // Store the full sprint object to pass complete data to modal
+        setManageSprintData(sprint);
+        setManageOpen(true);
     };
 
     const saveManage = async () => {
@@ -820,11 +909,11 @@ export default function BacklogsPage() {
                                 {visibleEpics.map(e => (
                                     <div
                                         key={e.epicID}
-                                        className={`epic-card${selectedEpicId === e.epicID ? ' epic-card--active' : ''}`}
+                                        className="epic-card"
                                         role="button"
                                         tabIndex={0}
-                                        onClick={() => setSelectedEpicId(e.epicID)}
-                                        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setSelectedEpicId(e.epicID); }}
+                                        onClick={() => setViewEpicId(e.epicID)}
+                                        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setViewEpicId(e.epicID); }}
                                     >
                                         <div className="epic-card-title">{e.epicTitle}</div>
                                         <div className="epic-card-progress">
@@ -1326,24 +1415,36 @@ export default function BacklogsPage() {
                                         </button>
                                     </>
                                 )}
-                                <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="adm-picker-option"
-                                    disabled={!canManage}
-                                    onClick={() => guarded(() => { openManageFor(s); })}
-                                >
-                                    Manage Sprint
-                                </button>
-                                <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="adm-picker-option sprint-picker-option--danger"
-                                    disabled={!canManage}
-                                    onClick={() => guarded(() => { setDeleteConfirmSprintId(s.sprintID); })}
-                                >
-                                    Delete Sprint
-                                </button>
+                                {canManage ? (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="adm-picker-option"
+                                        onClick={() => { closeMenu(); void openManageFor(s); }}
+                                    >
+                                        Manage Sprint
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="adm-picker-option"
+                                        onClick={() => { closeMenu(); void openManageFor(s); }}
+                                    >
+                                        View Sprint
+                                    </button>
+                                )}
+                                {canManage && (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="adm-picker-option sprint-picker-option--danger"
+                                        disabled={!canManage}
+                                        onClick={() => guarded(() => { setDeleteConfirmSprintId(s.sprintID); })}
+                                    >
+                                        Delete Sprint
+                                    </button>
+                                )}
                             </div>
                         );
                     })(),
@@ -1396,6 +1497,14 @@ export default function BacklogsPage() {
                     />
                 );
             })()}
+
+            {/* View Epic modal */}
+            {viewEpicId !== null && (
+                <ViewEpicModal
+                    epicId={viewEpicId}
+                    onClose={() => setViewEpicId(null)}
+                />
+            )}
 
             {/* Delete confirmation */}
             {deleteConfirmSprintId !== null && (
@@ -1453,6 +1562,8 @@ export default function BacklogsPage() {
             {manageOpen && manageSprintId !== null && (
                 <ManageSprintModal
                     onClose={resetManage}
+                    manageSprintId={manageSprintId}
+                    manageSprintData={manageSprintData}
                     manageSprintName={manageSprintName}
                     setManageSprintName={setManageSprintName}
                     manageGoal={manageGoal}
@@ -1467,7 +1578,7 @@ export default function BacklogsPage() {
                     setManageTeamId={setManageTeamId}
                     manageLoading={manageLoading}
                     manageError={manageError}
-                    onSave={() => void saveManage()}
+                    onSave={async () => { await saveManage(); }}
                     me={me}
                 />
             )}
@@ -1578,8 +1689,6 @@ function SprintWorkItemsList(props: {
     }
 
     const renderItem = (item: AgendaWorkItem, indent = false) => {
-        const priorityCls = priorityAccentClass(item.priority);
-        const statusCls = statusAccentClass(item.status);
         const assigneeName = item.assignedUserName
             ? item.assignedUserName
             : item.assignedUserID
@@ -1601,8 +1710,6 @@ function SprintWorkItemsList(props: {
                 >
                     {item.title}
                 </span>
-                <span className={`sprint-wi-compact-badge wi-status-chip ${statusCls}`}>{item.status}</span>
-                <span className={`sprint-wi-compact-badge wi-priority-chip ${priorityCls}`}>{item.priority ?? '—'}</span>
                 <span className="sprint-wi-compact-assignee">
                     {assigneeName || (canManage ? <button type="button" className="add-assignee-link" onClick={() => onAssignAssignee(item.workItemID)}>+ Assign</button> : 'Unassigned')}
                 </span>

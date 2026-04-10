@@ -34,6 +34,9 @@ export function normalizeSprintSummary(raw: Record<string, unknown>): SprintSumm
     const mn = raw.managedByName ?? raw.ManagedByName;
     const managedByName =
         typeof mn === 'string' && mn.trim() !== '' ? mn.trim() : null;
+    const tn = raw.teamName ?? raw.TeamName;
+    const teamName =
+        typeof tn === 'string' && tn.trim() !== '' ? tn.trim() : null;
     return {
         sprintID: num(raw, 'sprintID', 'SprintID') || 0,
         sprintName: String(raw.sprintName ?? raw.SprintName ?? ''),
@@ -54,6 +57,7 @@ export function normalizeSprintSummary(raw: Record<string, unknown>): SprintSumm
         managedBy: nullableId(raw, 'managedBy', 'ManagedBy'),
         managedByName,
         teamID: nullableId(raw, 'teamID', 'TeamID'),
+        teamName,
         createdAt:
             raw.createdAt != null
                 ? String(raw.createdAt)
@@ -114,6 +118,29 @@ export const listSprints = async (params?: {
 export const getSprintById = async (sprintId: number): Promise<SprintSummary> => {
     const raw = await apiClient.get<Record<string, unknown>>(`/api/sprints/${sprintId}`);
     return normalizeSprintSummary(raw);
+};
+
+/**
+ * Fetches complete sprint details including work items and computed metrics.
+ * This combines GET /api/sprints/{id} and GET /api/workitems/sprint/{sprintId}
+ * to provide a full picture of the sprint's state.
+ */
+export const getSprintDetails = async (sprintId: number): Promise<{
+    sprint: SprintSummary;
+    workItems: import('../types/planning').AgendaWorkItem[];
+}> => {
+    // Import dynamically to avoid circular dependency
+    const { getSprintWorkItems } = await import('./workItemsApi');
+    
+    // Fetch sprint details and work items in parallel
+    const [sprintRaw, workItems] = await Promise.all([
+        apiClient.get<Record<string, unknown>>(`/api/sprints/${sprintId}`),
+        getSprintWorkItems(sprintId).catch(() => []), // Fallback to empty array on error
+    ]);
+    
+    const sprint = normalizeSprintSummary(sprintRaw);
+    
+    return { sprint, workItems };
 };
 
 export const createSprint = async (payload: {

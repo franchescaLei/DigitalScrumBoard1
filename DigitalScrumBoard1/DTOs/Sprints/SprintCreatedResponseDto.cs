@@ -9,5 +9,7 @@ public sealed class SprintCreatedResponseDto
     public DateOnly EndDate { get; set; }
     public string Status { get; set; } = "";
     public int? ManagedBy { get; set; }
+    public string? ManagedByName { get; set; }
     public int? TeamID { get; set; }
+    public string? TeamName { get; set; }
 }

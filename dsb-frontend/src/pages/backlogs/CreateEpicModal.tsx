@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import apiClient from '../../services/apiClient';
+import { createWorkItem } from '../../api/workItemsApi';
 import { FieldError, TooltipIcon } from './modalPrimitives';
 
 export function CreateEpicModal({ onClose }: { onClose: () => void }) {
@@ -22,7 +22,14 @@ export function CreateEpicModal({ onClose }: { onClose: () => void }) {
         if (Object.keys(e).length > 0) return;
         setLoading(true);
         try {
-            await apiClient.post('/api/epics', { epicTitle: epicTitle.trim(), description: description.trim() });
+            const today = new Date().toISOString().split('T')[0];
+            await createWorkItem({
+                type: 'Epic',
+                title: epicTitle.trim(),
+                description: description.trim(),
+                priority: 'Medium',
+                dueDate: today,
+            });
             onClose();
         } catch (err) {
             setErrors({ submit: err instanceof Error ? err.message : 'Failed to create epic.' });

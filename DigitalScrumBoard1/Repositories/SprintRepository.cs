@@ -59,12 +59,16 @@ public sealed class SprintRepository : ISprintRepository
     {
         return await _db.Sprints
             .AsNoTracking()
+            .Include(s => s.Manager)
+            .Include(s => s.Team)
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
     }
 
     public async Task<Sprint?> GetTrackedByIdAsync(int sprintId, CancellationToken ct)
     {
         return await _db.Sprints
+            .Include(s => s.Manager)
+            .Include(s => s.Team)
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
     }
 
@@ -259,7 +263,7 @@ public sealed class SprintRepository : ISprintRepository
         if (pageSize < 1) pageSize = 1;
         if (pageSize > 200) pageSize = 200;
 
-        var q = _db.Sprints.AsNoTracking().Include(s => s.Manager).AsQueryable();
+        var q = _db.Sprints.AsNoTracking().Include(s => s.Manager).Include(s => s.Team).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -333,6 +337,7 @@ public sealed class SprintRepository : ISprintRepository
             s.ManagedBy,
             ManagedByName = FormatManagerDisplayName(s.Manager),
             s.TeamID,
+            TeamName = s.Team?.TeamName,
             s.CreatedAt,
             s.UpdatedAt,
             StoryCount = countsLookup.TryGetValue(s.SprintID, out var cnt) ? cnt.StoryCount : 0,

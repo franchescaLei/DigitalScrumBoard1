@@ -52,10 +52,12 @@ export default function ProtectedRoute({ children }: Props) {
                             setAuth({ status: "unauthenticated" });
                             return;
                         }
+                        // Other API errors (e.g., server error): fail closed
+                        setAuth({ status: "unauthenticated" });
+                        return;
                     }
-                    // Any other error: allow through
-                    setUser(user);
-                    setAuth({ status: "authenticated", user });
+                    // Non-API errors (network, parse errors): fail closed
+                    setAuth({ status: "unauthenticated" });
                 }
             } catch (err) {
                 if (cancelled) return;

@@ -23,7 +23,11 @@ export default function VerifyEmailPage() {
         if (!token) return;
 
         verifyEmail(token)
-            .then(() => setVerifyState('verified'))
+            .then(() => {
+                setVerifyState('verified');
+                // After successful verification, redirect to the confirmation page
+                setTimeout(() => navigate('/email-verified', { replace: true }), 1500);
+            })
             .catch((err) => {
                 setVerifyError(
                     err instanceof ApiError
@@ -32,7 +36,7 @@ export default function VerifyEmailPage() {
                 );
                 setVerifyState('error');
             });
-    }, [token]);
+    }, [token, navigate]);
 
     // If the user is already authenticated, routing should continue once verification succeeds.
     const navigateDoneRef = useRef(false);
@@ -219,14 +223,14 @@ export default function VerifyEmailPage() {
                     <header className="auth-page-header">
                         <p className="auth-page-eyebrow">Verified</p>
                         <h1 className="auth-page-title">Email confirmed</h1>
-                        <p className="auth-page-sub">You can continue to your account.</p>
+                        <p className="auth-page-sub">Redirecting you to the confirmation page...</p>
                     </header>
                     <button
                         type="button"
                         className="auth-submit"
-                        onClick={() => navigate('/login', { replace: true })}
+                        onClick={() => navigate('/email-verified', { replace: true })}
                     >
-                        Sign in
+                        Continue to Main Page
                     </button>
                 </AuthLayout>
             );

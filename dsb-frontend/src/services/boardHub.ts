@@ -18,3 +18,21 @@ export function getBoardHubConnection(): signalR.HubConnection {
 
   return boardConnection;
 }
+
+/**
+ * Ensures the board hub connection is started. Safe to call from multiple components;
+ * subsequent calls are no-ops if the connection is already connecting or connected.
+ */
+export async function ensureBoardHubStarted(): Promise<void> {
+  const conn = getBoardHubConnection();
+
+  if (
+    conn.state === signalR.HubConnectionState.Connected ||
+    conn.state === signalR.HubConnectionState.Connecting ||
+    conn.state === signalR.HubConnectionState.Reconnecting
+  ) {
+    return;
+  }
+
+  await conn.start();
+}

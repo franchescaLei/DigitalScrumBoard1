@@ -952,4 +952,138 @@ public sealed class WorkItemRepository : IWorkItemRepository
             .Where(w => w.ParentWorkItemID == parentId && !w.IsDeleted)
             .ToListAsync(ct);
     }
+
+    public async Task<WorkItemHierarchyDto?> GetEpicHierarchyAsync(int epicId, CancellationToken ct)
+    {
+        var epicTypeId = await _db.WorkItemTypes.AsNoTracking()
+            .Where(t => t.TypeName == "Epic").Select(t => t.WorkItemTypeID).FirstOrDefaultAsync(ct);
+        var storyTypeId = await _db.WorkItemTypes.AsNoTracking()
+            .Where(t => t.TypeName == "Story").Select(t => t.WorkItemTypeID).FirstOrDefaultAsync(ct);
+        var taskTypeId = await _db.WorkItemTypes.AsNoTracking()
+            .Where(t => t.TypeName == "Task").Select(t => t.WorkItemTypeID).FirstOrDefaultAsync(ct);
+
+        if (epicTypeId == 0 || storyTypeId == 0 || taskTypeId == 0) return null;
+
+        // Load the epic root
+        var epic = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals wt.WorkItemTypeID
+            join u in _db.Users.AsNoTracking() on w.AssignedUserID equals u.UserID into uj from u in uj.DefaultIfEmpty()
+            join t in _db.Teams.AsNoTracking() on w.TeamID equals t.TeamID into tj from t in tj.DefaultIfEmpty()
+            where w.WorkItemID == epicId && !w.IsDeleted && w.WorkItemTypeID == epicTypeId
+            select new { w, TypeName = wt.TypeName, AssignedUserName = u != null ? (u.FirstName + " " + u.LastName).Trim() : null, TeamName = t != null ? t.TeamName : null }
+        ).FirstOrDefaultAsync(ct);
+
+        if (epic is null) return null;
+
+        // Load all descendants: stories under epic + tasks under epic (direct) + tasks under stories
+        var descendants = await (
+            from w in _db.WorkItems.AsNoTracking()
+            join wt in _db.WorkItemTypes.AsNoTracking() on w.WorkItemTypeID equals wt.WorkItemTypeID
+            join u in _db.Users.AsNoTracking() on w.AssignedUserID equals u.UserID into uj from u in uj.DefaultIfEmpty()
+            join t in _db.Teams.AsNoTracking() on w.TeamID equals t.TeamID into tj from t in tj.DefaultIfEmpty()
+            join sp in _db.Sprints.AsNoTracking() on w.SprintID equals sp.SprintID into spj from sp in spj.DefaultIfEmpty()
+            where !w.IsDeleted && (
+                (w.WorkItemTypeID == storyTypeId && w.ParentWorkItemID == epicId) ||
+                (w.WorkItemTypeID == taskTypeId && w.ParentWorkItemID == epicId) ||
+                (w.WorkItemTypeID == taskTypeId && w.ParentWorkItemID.HasValue &&
+                    _db.WorkItems.Any(p => p.WorkItemID == w.ParentWorkItemID.Value && p.ParentWorkItemID == epicId && !p.IsDeleted))
+            )
+            select new
+            {
+                w.WorkItemID,
+                TypeName = wt.TypeName,
+                w.Title,
+                w.Description,
+                w.Status,
+                w.Priority,
+                w.DueDate,
+                w.AssignedUserID,
+                AssignedUserName = u != null ? (u.FirstName + " " + u.LastName).Trim() : null,
+                w.ParentWorkItemID,
+                w.TeamID,
+                TeamName = t != null ? t.TeamName : null,
+                w.SprintID,
+                SprintName = sp != null ? sp.SprintName : null,
+                w.CreatedAt,
+                w.UpdatedAt
+            }
+        ).ToListAsync(ct);
+
+        // Build flat map
+        var map = new Dictionary<int, WorkItemHierarchyDto>();
+        foreach (var d in descendants)
+        {
+            map[d.WorkItemID] = new WorkItemHierarchyDto
+            {
+                WorkItemID = d.WorkItemID,
+                TypeName = d.TypeName,
+                Title = d.Title ?? "",
+                Description = d.Description,
+                Status = d.Status,
+                Priority = d.Priority,
+                DueDate = d.DueDate,
+                AssignedUserID = d.AssignedUserID,
+                AssignedUserName = d.AssignedUserName,
+                ParentWorkItemID = d.ParentWorkItemID,
+                TeamID = d.TeamID,
+                TeamName = d.TeamName,
+                SprintID = d.SprintID,
+                SprintName = d.SprintName,
+                CreatedAt = d.CreatedAt,
+                UpdatedAt = d.UpdatedAt,
+                Children = new List<WorkItemHierarchyDto>()
+            };
+        }
+
+        // Build tree: assign children to parents
+        var roots = new List<WorkItemHierarchyDto>();
+        foreach (var node in map.Values)
+        {
+            if (node.ParentWorkItemID.HasValue && map.TryGetValue(node.ParentWorkItemID.Value, out var parent))
+            {
+                parent.Children.Add(node);
+            }
+            else
+            {
+                roots.Add(node);
+            }
+        }
+
+        // Sort children: stories first, then tasks; within each group by WorkItemID
+        foreach (var node in map.Values)
+        {
+            node.Children = node.Children
+                .OrderBy(c => c.TypeName == "Story" ? 0 : 1)
+                .ThenBy(c => c.WorkItemID)
+                .ToList();
+        }
+
+        // Build the root epic node
+        var rootDto = new WorkItemHierarchyDto
+        {
+            WorkItemID = epic.w.WorkItemID,
+            TypeName = epic.TypeName,
+            Title = epic.w.Title ?? "",
+            Description = epic.w.Description,
+            Status = epic.w.Status ?? "",
+            Priority = epic.w.Priority,
+            DueDate = epic.w.DueDate,
+            AssignedUserID = epic.w.AssignedUserID,
+            AssignedUserName = epic.AssignedUserName,
+            ParentWorkItemID = epic.w.ParentWorkItemID,
+            TeamID = epic.w.TeamID,
+            TeamName = epic.TeamName,
+            SprintID = epic.w.SprintID,
+            SprintName = null,
+            CreatedAt = epic.w.CreatedAt,
+            UpdatedAt = epic.w.UpdatedAt,
+            Children = roots
+                .OrderBy(c => c.TypeName == "Story" ? 0 : 1)
+                .ThenBy(c => c.WorkItemID)
+                .ToList()
+        };
+
+        return rootDto;
+    }
 }

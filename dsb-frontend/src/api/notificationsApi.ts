@@ -1,8 +1,8 @@
-import apiClient from "../services/apiClient";
+import apiClient from '../services/apiClient';
 import type {
   NotificationListResponse,
   UnreadNotificationCount,
-} from "../types/notification";
+} from '../types/notification';
 
 /** Fired so the header (and similar) can refetch unread count after server-side notification changes. */
 export const NOTIFICATIONS_CHANGED_EVENT = "dsb-notifications-changed";

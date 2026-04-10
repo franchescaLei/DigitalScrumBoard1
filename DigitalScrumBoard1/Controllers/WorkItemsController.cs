@@ -51,6 +51,10 @@ public sealed class WorkItemsController : ControllerBase
 
         var isElevated = IsElevatedWorkItemRole();
 
+        // Only Administrators and Scrum Masters can create work items
+        if (!isElevated)
+            return StatusCode(403, new { message = "Only Administrators and Scrum Masters can create work items." });
+
         var epicTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Epic", ct);
         var storyTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Story", ct);
         var taskTypeId = await _repo.GetWorkItemTypeIdByNameAsync("Task", ct);
@@ -66,12 +70,7 @@ public sealed class WorkItemsController : ControllerBase
             _ => throw new InvalidOperationException()
         };
 
-        // ── Authorization: who can create what ──
-        // Epics: Admin/Scrum Master only
-        if (type == "Epic" && !isElevated)
-            return BadRequest(new { message = "Only Administrators and Scrum Masters can create Epics." });
-
-        // Stories and Tasks with a parent: parent ownership check
+        // ── Validation: parent type constraints ──
         if (type == "Story" || type == "Task")
         {
             if (req.ParentWorkItemID is null)
@@ -82,30 +81,6 @@ public sealed class WorkItemsController : ControllerBase
                 return BadRequest(new { message = "Parent work item not found." });
             if (parentInfo.Value.IsDeleted)
                 return BadRequest(new { message = "Cannot create under a deleted parent work item." });
-
-            // For Tasks under a Story: only the Story's assignee or elevated users can create
-            if (type == "Task" && parentInfo.Value.WorkItemTypeID == storyTypeId.Value && !isElevated)
-            {
-                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
-                if (parent is null || parent.AssignedUserID != userId.Value)
-                    return Forbid("Only the Story assignee or Administrators/Scrum Masters can create tasks under this Story.");
-            }
-
-            // For Stories under an Epic: only the Epic's assignee or elevated users can create
-            if (type == "Story" && !isElevated)
-            {
-                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
-                if (parent is null || parent.AssignedUserID != userId.Value)
-                    return Forbid("Only the Epic assignee or Administrators/Scrum Masters can create stories under this Epic.");
-            }
-
-            // For Tasks under an Epic: only the Epic's assignee or elevated users can create
-            if (type == "Task" && parentInfo.Value.WorkItemTypeID == epicTypeId.Value && !isElevated)
-            {
-                var parent = await _repo.GetByIdAsync(req.ParentWorkItemID.Value, ct);
-                if (parent is null || parent.AssignedUserID != userId.Value)
-                    return Forbid("Only the Epic assignee or Administrators/Scrum Masters can create tasks under this Epic.");
-            }
 
             // Validate parent type constraints
             if (type == "Story" && parentInfo.Value.WorkItemTypeID != epicTypeId.Value)
@@ -125,10 +100,6 @@ public sealed class WorkItemsController : ControllerBase
                 }
             }
         }
-
-        // If no parent and not elevated (creating orphan Task/Story), reject
-        if ((type == "Story" || type == "Task") && req.ParentWorkItemID is null && !isElevated)
-            return BadRequest(new { message = "Only Administrators and Scrum Masters can create work items without a parent." });
 
         var title = (req.Title ?? "").Trim();
         var desc = (req.Description ?? "").Trim();
@@ -285,10 +256,15 @@ public sealed class WorkItemsController : ControllerBase
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
-        // Only admins/scrum masters or the work item's assignee (owner) can comment
+        // Authorization: Admin/SM, assignee, or Sprint Manager
         var canComment = CanManageWorkItem(userId.Value, workItem.AssignedUserID);
+        if (!canComment && workItem.SprintID.HasValue)
+        {
+            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+            canComment = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
+        }
         if (!canComment)
-            return StatusCode(403, new { message = "Only administrators, scrum masters, or the work item's assignee can comment." });
+            return StatusCode(403, new { message = "Only administrators, scrum masters, the sprint manager, or the work item's assignee can comment." });
 
         var text = req.CommentText.Trim();
         if (text.Length == 0)
@@ -535,6 +511,22 @@ public sealed class WorkItemsController : ControllerBase
             return BadRequest(new { message = "ParentID is required." });
 
         var result = await _repo.GetWorkItemsByParentIdAsync(parentId, "Task", ct);
+        return Ok(result);
+    }
+
+    [HttpGet("epic/{epicId:int}/hierarchy")]
+    [Authorize(AuthenticationSchemes = "MyCookieAuth")]
+    public async Task<ActionResult<WorkItemHierarchyDto>> GetEpicHierarchy(
+        [FromRoute] int epicId,
+        CancellationToken ct = default)
+    {
+        if (epicId <= 0)
+            return BadRequest(new { message = "EpicID must be greater than 0." });
+
+        var result = await _repo.GetEpicHierarchyAsync(epicId, ct);
+        if (result is null)
+            return NotFound(new { message = "Epic not found." });
+
         return Ok(result);
     }
 
@@ -1094,11 +1086,10 @@ public sealed class WorkItemsController : ControllerBase
         }
 
         // ── Authorization: who can update? ──
-        // 1. Admin/Scrum Master: full access
-        // 2. Assignee (owner): basic fields only
-        // 3. Sprint Owner: basic fields + status for items in their sprint
+        // 1. Admin/Scrum Master: full access (all fields)
+        // 2. Sprint Manager: can change assignee only for items in their sprint
         var isOwner = workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value == userId.Value;
-        if (!isElevated && !isOwner && !isSprintOwner)
+        if (!isElevated && !isSprintOwner)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -1119,6 +1110,34 @@ public sealed class WorkItemsController : ControllerBase
 
         if (epicTypeId is null || storyTypeId is null || taskTypeId is null)
             return Problem("WorkItemTypes table is missing Epic/Story/Task entries.");
+
+        // ── Field-level restrictions for Sprint Manager ──
+        // Sprint Manager can ONLY change assignee — not title, description, priority, team, parent, or dueDate
+        if (isSprintOwner && !isElevated)
+        {
+            var hasNonAssigneeChange =
+                req.Title is not null ||
+                req.Description is not null ||
+                req.Priority is not null ||
+                req.TeamID.HasValue ||
+                req.ParentWorkItemID.HasValue ||
+                req.DueDate is not null;
+
+            if (hasNonAssigneeChange)
+            {
+                await _audit.LogAsync(
+                    userId.Value,
+                    "WorkItem.Update",
+                    "WorkItem",
+                    workItem.WorkItemID,
+                    false,
+                    $"Unauthorized: sprint manager attempted to edit non-assignee fields for WorkItemID={workItem.WorkItemID}",
+                    ip,
+                    ct);
+
+                return StatusCode(403, new { message = "Sprint managers can only change the assignee of work items. Administrators and scrum masters are required to edit other fields." });
+            }
+        }
 
         var histories = new List<WorkItemHistory>();
         var changedFields = new List<string>();

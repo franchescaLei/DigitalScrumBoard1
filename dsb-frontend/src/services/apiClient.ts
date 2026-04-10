@@ -13,18 +13,22 @@ export class ApiError extends Error {
     readonly status: number;
     readonly code?: string;
     readonly retryAfterSeconds?: number;
+    /** Raw response data — useful for 409 confirmation payloads with extra fields. */
+    readonly data?: Record<string, unknown>;
 
     constructor(
         message: string,
         status: number,
         code?: string,
         retryAfterSeconds?: number,
+        data?: Record<string, unknown>,
     ) {
         super(message);
         this.name = 'ApiError';
         this.status = status;
         this.code = code;
         this.retryAfterSeconds = retryAfterSeconds;
+        this.data = data;
     }
 
     get isUnauthorized() { return this.status === 401; }
@@ -112,6 +116,7 @@ async function request<T>(
             response.status,
             typeof data.code === 'string' ? data.code : undefined,
             retryAfterSeconds,
+            data,
         );
     }
 

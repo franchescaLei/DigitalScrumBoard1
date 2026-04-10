@@ -1,13 +1,16 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { getActiveBoards, getBoard } from '../api/boardsApi';
-import { getBoardHubConnection } from '../services/boardHub';
+import { getActiveBoards, getBoard, moveWorkItem } from '../api/boardsApi';
+import { stopSprint, completeSprint } from '../api/sprintsApi';
+import { getBoardHubConnection, ensureBoardHubStarted } from '../services/boardHub';
 import { ApiError } from '../services/apiClient';
 import type { ActiveBoard, WorkItemBoardDto, BoardResponse } from '../types/board';
+import type { WorkItemBroadcastDto } from '../types/boardSignalR';
 import { priorityAccentClass } from './backlogs/planningUtils';
 import { WorkItemDetailModal } from './backlogs/WorkItemDetailModal';
 import type { AgendaWorkItem } from '../types/planning';
-import * as signalR from '@microsoft/signalr';
+import { useAuth } from '../context/AuthContext';
+import { canMoveWorkItem, getMoveRestrictionReason } from '../utils/boardPermissions';
 import '../styles/backlogs.css';
 import '../styles/backlogs-story-pills.css';
 import '../styles/boards.css';
@@ -66,18 +69,6 @@ const COLUMNS: ColumnConfig[] = [
 // Icons
 // ─────────────────────────────────────────────
 
-const RefreshIcon = () => (
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-        <path
-            d="M13 7.5A5.5 5.5 0 0 1 3.08 11M2 7.5A5.5 5.5 0 0 1 11.92 4M11 1.5v3h-3M4 13.5v-3h3"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        />
-    </svg>
-);
-
 const ChevronIcon = () => (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
         <path d="M2 5l5 4 5-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -101,38 +92,10 @@ const KanbanEmptyIcon = ({ variant }: { variant: ColumnKey }) => {
     );
 };
 
-const BoardSelectorIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect x="1" y="2" width="4.5" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-        <rect x="6.75" y="2" width="4.5" height="7.5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-        <rect x="12.5" y="2" width="2.5" height="4.5" rx="1.25" stroke="currentColor" strokeWidth="1.3" />
-    </svg>
-);
-
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
-
-function getInitials(name: string): string {
-    return name
-        .split(' ')
-        .map((n) => n[0] ?? '')
-        .join('')
-        .slice(0, 2)
-        .toUpperCase();
-}
-
-function isDueSoon(dueDate: string | null | undefined): boolean {
-    if (!dueDate) return false;
-    const d = new Date(dueDate);
-    const diff = d.getTime() - Date.now();
-    return diff > 0 && diff < 3 * 24 * 60 * 60 * 1000;
-}
-
-function isOverdue(dueDate: string | null | undefined): boolean {
-    if (!dueDate) return false;
-    return new Date(dueDate).getTime() < Date.now();
-}
+// Reserved helpers (commented out for future use)
+// function getInitials(name: string): string { ... }
+// function isDueSoon(dueDate: string | null | undefined): boolean { ... }
+// function isOverdue(dueDate: string | null | undefined): boolean { ... }
 
 function boardItemToAgendaItem(item: WorkItemBoardDto): AgendaWorkItem {
     return {
@@ -194,16 +157,18 @@ interface CardProps {
     onDragStart: (id: number) => void;
     onDragEnd: () => void;
     onOpen: (item: WorkItemBoardDto) => void;
+    disabled?: boolean;
 }
 
-function WorkItemCard({ item, columnKey, onDragStart, onDragEnd, onOpen }: CardProps) {
+function WorkItemCard({ item, columnKey, onDragStart, onDragEnd, onOpen, disabled }: CardProps) {
     const priorityCls = priorityAccentClass(item.priority);
 
     return (
         <div
             className="boards-card"
-            draggable
+            draggable={!disabled}
             onDragStart={(e) => {
+                if (disabled) { e.preventDefault(); return; }
                 e.dataTransfer.setData('text/plain', String(item.workItemID));
                 e.dataTransfer.effectAllowed = 'move';
                 (e.currentTarget as HTMLElement).classList.add('boards-card--dragging');
@@ -217,7 +182,8 @@ function WorkItemCard({ item, columnKey, onDragStart, onDragEnd, onOpen }: CardP
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpen(item); }}
             role="button"
             tabIndex={0}
-            aria-label={`Work item: ${item.title}`}
+            aria-label={`Work item: ${item.title} (${columnKey})`}
+            style={disabled ? { opacity: 0.55, cursor: 'not-allowed' } : undefined}
         >
             {/* Card header: type (left) + priority (right) */}
             <div className="boards-card-header-row">
@@ -262,6 +228,8 @@ function EmptyColumn({ columnKey, text }: { columnKey: ColumnKey; text: string }
 // ─────────────────────────────────────────────
 
 export default function BoardsPage() {
+    const { user } = useAuth();
+
     const [boards, setBoards] = useState<ActiveBoard[]>([]);
     const [boardsLoading, setBoardsLoading] = useState(true);
     const [boardsError, setBoardsError] = useState('');
@@ -270,12 +238,42 @@ export default function BoardsPage() {
     const [boardData, setBoardData] = useState<BoardResponse | null>(null);
     const [boardLoading, setBoardLoading] = useState(false);
     const [boardError, setBoardError] = useState('');
-    const [refreshing, setRefreshing] = useState(false);
 
     const [dragOverColumn, setDragOverColumn] = useState<ColumnKey | null>(null);
     const [draggingId, setDraggingId] = useState<number | null>(null);
+    const [movingItemId, setMovingItemId] = useState<number | null>(null);
+    const [moveError, setMoveError] = useState<string | null>(null);
+    const [permissionError, setPermissionError] = useState<string | null>(null);
 
     const [detailItem, setDetailItem] = useState<AgendaWorkItem | null>(null);
+
+    // Sprint lifecycle state
+    const [sprintLifecycleLoading, setSprintLifecycleLoading] = useState(false);
+    const [showSprintConfirmModal, setShowSprintConfirmModal] = useState<
+        { action: 'stop' | 'complete'; unfinishedCount: number; completedCount: number } | null
+    >(null);
+
+    // Map column key to backend status string
+    function columnKeyToStatus(key: ColumnKey): string {
+        switch (key) {
+            case 'todo': return 'To-do';
+            case 'ongoing': return 'Ongoing';
+            case 'forChecking': return 'For Checking';
+            case 'completed': return 'Completed';
+        }
+    }
+
+    // Map backend status string to column key
+    function statusToColumnKey(status: string): ColumnKey | null {
+        const s = status.toLowerCase();
+        switch (s) {
+            case 'to-do': case 'todo': return 'todo';
+            case 'ongoing': return 'ongoing';
+            case 'for checking': case 'for-checking': return 'forChecking';
+            case 'completed': return 'completed';
+            default: return null;
+        }
+    }
 
     // ── Load active boards ────────────────────
     const loadBoards = useCallback(async () => {
@@ -296,12 +294,11 @@ export default function BoardsPage() {
 
     useEffect(() => {
         void loadBoards();
-    }, []);
+    }, [loadBoards]);
 
     // ── Load board data ───────────────────────
     const loadBoard = useCallback(async (sprintId: number, silent = false) => {
         if (!silent) setBoardLoading(true);
-        else setRefreshing(true);
         setBoardError('');
         try {
             const data = await getBoard(sprintId);
@@ -310,7 +307,6 @@ export default function BoardsPage() {
             setBoardError(err instanceof ApiError ? err.message : 'Failed to load board.');
         } finally {
             setBoardLoading(false);
-            setRefreshing(false);
         }
     }, []);
 
@@ -333,16 +329,126 @@ export default function BoardsPage() {
         };
     }, [boardData]);
 
-    // ── SignalR real-time updates ──────────────
-    const hubRefreshTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+    // ── Optimistic move ───────────────────────
+    const handleDrop = useCallback(async (workItemId: number, targetColumn: ColumnKey) => {
+        const targetStatus = columnKeyToStatus(targetColumn);
 
-    const scheduleHubRefresh = useCallback(() => {
-        if (hubRefreshTimerRef.current) return;
-        hubRefreshTimerRef.current = window.setTimeout(() => {
-            hubRefreshTimerRef.current = null;
-            if (selectedSprintId !== null) void loadBoard(selectedSprintId, true);
-        }, 200);
-    }, [selectedSprintId, loadBoard]);
+        // Find the item in current board data to check permissions
+        let item: WorkItemBoardDto | null = null;
+        let sourceColumn: ColumnKey | null = null;
+        for (const col of COLUMNS) {
+            const found = columnItems[col.key].find(i => i.workItemID === workItemId);
+            if (found) {
+                item = found;
+                sourceColumn = col.key;
+                break;
+            }
+        }
+        if (!item || !sourceColumn) return;
+
+        // Skip if already in target column
+        if (sourceColumn === targetColumn) return;
+
+        // Permission check
+        if (!canMoveWorkItem(user, item)) {
+            const reason = getMoveRestrictionReason(user, item) ?? 'You do not have permission to move this item.';
+            setPermissionError(reason);
+            window.setTimeout(() => setPermissionError(null), 4000);
+            return;
+        }
+
+        setMovingItemId(workItemId);
+        setMoveError(null);
+
+        // Optimistically update UI: remove from source, add to target
+        const oldBoardData = boardData;
+        const optimisticUpdate = (prev: BoardResponse | null): BoardResponse | null => {
+            if (!prev) return prev;
+            const srcKey = columnKeyToStatus(sourceColumn)!.toLowerCase().replace(' ', '').replace('-', '');
+            const tgtKey = columnKeyToStatus(targetColumn)!.toLowerCase().replace(' ', '').replace('-', '');
+
+            // Map status keys to board response fields
+            const fieldMap: Record<string, keyof Pick<BoardResponse, 'todo' | 'ongoing' | 'forChecking' | 'completed'>> = {
+                'to-do': 'todo',
+                'ongoing': 'ongoing',
+                'forchecking': 'forChecking',
+                'completed': 'completed',
+            };
+            const srcField = fieldMap[srcKey];
+            const tgtField = fieldMap[tgtKey];
+            if (!srcField || !tgtField) return prev;
+
+            const srcItems = (prev[srcField] ?? []).filter(i => i.workItemID !== workItemId);
+            const tgtItems = [...(prev[tgtField] ?? []), { ...item, status: targetStatus }];
+
+            return { ...prev, [srcField]: srcItems, [tgtField]: tgtItems };
+        };
+
+        setBoardData(prev => optimisticUpdate(prev));
+
+        try {
+            await moveWorkItem(workItemId, targetStatus);
+        } catch (err) {
+            // Rollback on failure
+            setBoardData(oldBoardData);
+            const message = err instanceof ApiError ? err.message : 'Failed to move work item.';
+            setMoveError(message);
+            window.setTimeout(() => setMoveError(null), 5000);
+        } finally {
+            setMovingItemId(null);
+            setDraggingId(null);
+            setDragOverColumn(null);
+        }
+    }, [boardData, columnItems, user]);
+
+    // ── SignalR real-time updates ──────────────
+    const handleWorkItemMoved = useCallback((payload: unknown) => {
+        if (payload === null || typeof payload !== 'object') return;
+        const data = payload as Record<string, unknown>;
+        const broadcast = data as WorkItemBroadcastDto;
+        const newStatus = broadcast.status;
+        const columnKey = statusToColumnKey(newStatus);
+        if (!columnKey) return;
+
+        setBoardData(prev => {
+            if (!prev) return prev;
+
+            // Remove the item from all columns
+            const cleaned: Record<string, WorkItemBoardDto[]> = {};
+            for (const col of COLUMNS) {
+                cleaned[col.statusKey] = (prev[col.statusKey] ?? []).filter(
+                    i => i.workItemID !== broadcast.workItemID
+                );
+            }
+
+            // Build the updated item for the target column
+            const updatedItem: WorkItemBoardDto = {
+                workItemID: broadcast.workItemID,
+                title: broadcast.title,
+                status: broadcast.status,
+                typeName: broadcast.workItemType || null,
+                priority: broadcast.priority,
+                assignedUserID: broadcast.assignedUserID,
+                assignedUserName: broadcast.assignedUserName,
+                commentCount: 0,
+            };
+
+            const targetField = columnKey === 'todo' ? 'todo'
+                : columnKey === 'ongoing' ? 'ongoing'
+                    : columnKey === 'forChecking' ? 'forChecking'
+                        : 'completed';
+
+            cleaned[targetField] = [...(cleaned[targetField] ?? []), updatedItem];
+
+            return {
+                ...prev,
+                todo: cleaned.todo,
+                ongoing: cleaned.ongoing,
+                forChecking: cleaned.forChecking,
+                completed: cleaned.completed,
+            };
+        });
+    }, []);
 
     useEffect(() => {
         const conn = getBoardHubConnection();
@@ -359,16 +465,31 @@ export default function BoardsPage() {
             'SprintStopped',
         ];
 
-        const handler = () => scheduleHubRefresh();
+        // Debounced refresh for general events
+        let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefresh = () => {
+            if (refreshTimer) return;
+            refreshTimer = setTimeout(() => {
+                refreshTimer = null;
+                if (selectedSprintId !== null) void loadBoard(selectedSprintId, true);
+            }, 300);
+        };
+
+        let cancelled = false;
 
         const start = async () => {
             try {
-                if (conn.state === signalR.HubConnectionState.Disconnected) {
-                    await conn.start();
-                }
-            } catch { /* optional */ }
-            events.forEach((ev) => conn.on(ev, handler));
-            // Join the sprint group for targeted broadcasts
+                await ensureBoardHubStarted();
+            } catch {
+                // Hub unavailable — board still works, just no real-time updates
+                return;
+            }
+            if (cancelled) return;
+
+            // Register handlers first, THEN join the group so we don't miss early events
+            events.forEach((ev) => conn.on(ev, scheduleRefresh));
+            conn.on('WorkItemMoved', handleWorkItemMoved);
+
             if (selectedSprintId !== null) {
                 try { await conn.invoke('JoinSprintBoard', selectedSprintId); } catch { /* ignore */ }
             }
@@ -376,19 +497,15 @@ export default function BoardsPage() {
 
         void start();
         return () => {
-            events.forEach((ev) => conn.off(ev, handler));
+            cancelled = true;
+            events.forEach((ev) => conn.off(ev, scheduleRefresh));
+            conn.off('WorkItemMoved', handleWorkItemMoved);
+            if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
             if (selectedSprintId !== null) {
                 void conn.invoke('LeaveSprintBoard', selectedSprintId).catch(() => { /* ignore */ });
             }
         };
-    }, [scheduleHubRefresh, selectedSprintId]);
-
-    // ── Refresh handler ───────────────────────
-    const handleRefresh = useCallback(() => {
-        if (selectedSprintId !== null) {
-            void loadBoard(selectedSprintId, true);
-        }
-    }, [selectedSprintId, loadBoard]);
+    }, [handleWorkItemMoved, selectedSprintId, loadBoard]);
 
     // ── Board selector name ───────────────────
     const currentBoardName = useMemo(() => {
@@ -412,6 +529,76 @@ export default function BoardsPage() {
         void loadBoard(next.sprintID, true);
         setSelectedSprintId(next.sprintID);
     }, [boards, currentBoardIndex, loadBoard]);
+
+    // ── Sprint lifecycle actions ──────────────
+    const canManageCurrentSprint = useMemo(() => {
+        if (!user || selectedSprintId === null) return false;
+        // We don't have full SprintSummary here, so check by role alone
+        // Full sprint details come from boardData which has sprintManagerName
+        // For now, use the boardData to infer management
+        const isManager = boardData?.sprintManagerName != null;
+        const isElevated = user.roleName === 'Administrator' || user.roleName === 'Scrum Master' || user.roleName === 'ScrumMaster';
+        return isElevated || isManager;
+    }, [user, selectedSprintId, boardData]);
+
+    const handleStopSprint = useCallback(async (confirm = false) => {
+        if (selectedSprintId === null) return;
+        setSprintLifecycleLoading(true);
+        try {
+            await stopSprint(selectedSprintId, confirm);
+            // After stopping, the sprint is no longer active — reload boards
+            setBoardData(null);
+            await loadBoards();
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 409 && err.data) {
+                // Server requires confirmation — show modal
+                const unfinishedCount = Number(err.data.unfinishedCount ?? 0);
+                const completedCount = Number(err.data.completedCount ?? 0);
+                setShowSprintConfirmModal({ action: 'stop', unfinishedCount, completedCount });
+                setSprintLifecycleLoading(false);
+                return;
+            }
+            setBoardError(err instanceof ApiError ? err.message : 'Failed to stop sprint.');
+            setSprintLifecycleLoading(false);
+        }
+    }, [selectedSprintId, loadBoards]);
+
+    const handleCompleteSprint = useCallback(async (confirm = false) => {
+        if (selectedSprintId === null) return;
+        setSprintLifecycleLoading(true);
+        try {
+            await completeSprint(selectedSprintId, confirm);
+            // After completing, the sprint is deleted — reload boards
+            setBoardData(null);
+            await loadBoards();
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 409 && err.data) {
+                // Server requires confirmation — show modal
+                const unfinishedCount = Number(err.data.unfinishedCount ?? 0);
+                const completedCount = Number(err.data.completedCount ?? 0);
+                setShowSprintConfirmModal({ action: 'complete', unfinishedCount, completedCount });
+                setSprintLifecycleLoading(false);
+                return;
+            }
+            setBoardError(err instanceof ApiError ? err.message : 'Failed to complete sprint.');
+            setSprintLifecycleLoading(false);
+        }
+    }, [selectedSprintId, loadBoards]);
+
+    const handleSprintConfirm = useCallback(async () => {
+        if (!showSprintConfirmModal) return;
+        if (showSprintConfirmModal.action === 'stop') {
+            await handleStopSprint(true);
+        } else {
+            await handleCompleteSprint(true);
+        }
+        setShowSprintConfirmModal(null);
+    }, [showSprintConfirmModal, handleStopSprint, handleCompleteSprint]);
+
+    // ── Determine if a card is disabled for drag ──
+    const isCardDraggingDisabled = useCallback((item: WorkItemBoardDto) => {
+        return !canMoveWorkItem(user, item);
+    }, [user]);
 
     // ─────────────────────────────────────────────
     // Render
@@ -475,6 +662,28 @@ export default function BoardsPage() {
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
                 </div>
+
+                {/* Sprint lifecycle buttons */}
+                {canManageCurrentSprint && boardData && (
+                    <div className="boards-lifecycle-actions">
+                        <button
+                            type="button"
+                            className="boards-btn-lifecycle boards-btn-lifecycle--stop"
+                            onClick={() => void handleStopSprint(false)}
+                            disabled={sprintLifecycleLoading}
+                        >
+                            Stop Sprint
+                        </button>
+                        <button
+                            type="button"
+                            className="boards-btn-lifecycle boards-btn-lifecycle--complete"
+                            onClick={() => void handleCompleteSprint(false)}
+                            disabled={sprintLifecycleLoading}
+                        >
+                            Complete Sprint
+                        </button>
+                    </div>
+                )}
             </div>
 
             {/* ── Body ────────────────────────────────── */}
@@ -484,6 +693,12 @@ export default function BoardsPage() {
                 )}
                 {boardError && (
                     <div className="boards-error-banner" role="alert">{boardError}</div>
+                )}
+                {moveError && (
+                    <div className="boards-error-banner" role="alert">{moveError}</div>
+                )}
+                {permissionError && (
+                    <div className="boards-error-banner" role="alert" style={{ background: 'var(--chip-medium-bg)', color: 'var(--chip-medium-color)', borderColor: 'var(--chip-medium-border, var(--card-border))' }}>{permissionError}</div>
                 )}
 
                 {/* No boards available */}
@@ -522,7 +737,7 @@ export default function BoardsPage() {
                 )}
 
                 {/* Kanban board */}
-                {!boardsLoading && boards.length > 0 && (boardData || !boardLoading) && !boardLoading && (
+                {!boardsLoading && boards.length > 0 && boardData && !boardLoading && (
                     <div className="boards-kanban">
                         {COLUMNS.map((col) => {
                             const items = columnItems[col.key];
@@ -545,11 +760,10 @@ export default function BoardsPage() {
                                     onDrop={(e) => {
                                         e.preventDefault();
                                         setDragOverColumn(null);
-                                        // Drag-and-drop status change scaffolding:
-                                        // const id = e.dataTransfer.getData('text/plain');
-                                        // future: call updateWorkItemStatus(Number(id), col.statusKey)
-                                        //         then reload board
-                                        void loadBoard(selectedSprintId!);
+                                        const id = Number(e.dataTransfer.getData('text/plain'));
+                                        if (!Number.isNaN(id) && id > 0) {
+                                            void handleDrop(id, col.key);
+                                        }
                                     }}
                                 >
                                     {/* Column header */}
@@ -563,31 +777,45 @@ export default function BoardsPage() {
 
                                     {/* Column body */}
                                     <div className="boards-col-body">
-                                        {isDragOver && draggingId !== null && (
+                                        {isDragOver && draggingId !== null && movingItemId !== draggingId && (
                                             <div className="boards-drag-placeholder" aria-hidden="true" />
                                         )}
 
-                                        {items.length === 0 ? (
+                                        {items.length === 0 && !isDragOver ? (
                                             <EmptyColumn
                                                 columnKey={col.key}
                                                 text={col.emptyText}
                                             />
-                                        ) : (
-                                            items.map((item) => (
-                                                <WorkItemCard
-                                                    key={item.workItemID}
-                                                    item={item}
-                                                    columnKey={col.key}
-                                                    onDragStart={(id) => setDraggingId(id)}
-                                                    onDragEnd={() => {
-                                                        setDraggingId(null);
-                                                        setDragOverColumn(null);
-                                                    }}
-                                                    onOpen={(wi) =>
-                                                        setDetailItem(boardItemToAgendaItem(wi))
-                                                    }
-                                                />
-                                            ))
+                                        ) : items.length === 0 && isDragOver ? null : (
+                                            items.map((item) => {
+                                                const isMoving = movingItemId === item.workItemID;
+                                                const isDisabled = isCardDraggingDisabled(item);
+                                                return (
+                                                    <WorkItemCard
+                                                        key={item.workItemID}
+                                                        item={item}
+                                                        columnKey={col.key}
+                                                        disabled={isDisabled || isMoving}
+                                                        onDragStart={(id) => {
+                                                            setDraggingId(id);
+                                                            setPermissionError(null);
+                                                            setMoveError(null);
+                                                        }}
+                                                        onDragEnd={() => {
+                                                            setDraggingId(null);
+                                                            setDragOverColumn(null);
+                                                        }}
+                                                        onOpen={(wi) =>
+                                                            setDetailItem(boardItemToAgendaItem(wi))
+                                                        }
+                                                    />
+                                                );
+                                            })
+                                        )}
+
+                                        {/* Show placeholder when dropping into empty column */}
+                                        {items.length === 0 && isDragOver && draggingId !== null && (
+                                            <div className="boards-drag-placeholder" aria-hidden="true" />
                                         )}
                                     </div>
                                 </div>
@@ -604,8 +832,67 @@ export default function BoardsPage() {
                 onClose={() => setDetailItem(null)}
                 canManage={false}
                 canEdit={true}
-                currentUserId={null}
+                currentUserId={user?.userID ?? null}
             />,
+            document.body
+        )}
+
+        {/* ── Sprint Lifecycle Confirmation Modal ───── */}
+        {showSprintConfirmModal && createPortal(
+            <div className="boards-confirm-overlay" role="dialog" aria-modal="true" aria-label="Confirm sprint action">
+                <div className="boards-confirm-dialog">
+                    <div className="boards-confirm-icon">
+                        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+                            <path d="M14 7v8M14 19v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                            <circle cx="14" cy="14" r="12" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+                        </svg>
+                    </div>
+                    <h3 className="boards-confirm-title">
+                        {showSprintConfirmModal.action === 'stop'
+                            ? 'Stop Sprint?'
+                            : 'Complete Sprint?'}
+                    </h3>
+                    <p className="boards-confirm-message">
+                        {showSprintConfirmModal.unfinishedCount > 0 && (
+                            <>
+                                {showSprintConfirmModal.unfinishedCount} work item{showSprintConfirmModal.unfinishedCount !== 1 ? 's' : ''} ha{showSprintConfirmModal.unfinishedCount !== 1 ? 've' : 's'} not been marked as completed.
+                            </>
+                        )}
+                        {showSprintConfirmModal.action === 'complete' && (
+                            <> Unfinished work items will be sent to backlog.</>
+                        )}
+                        {showSprintConfirmModal.action === 'stop' && (
+                            <> The sprint will be returned to Planned status.</>
+                        )}
+                    </p>
+                    <div className="boards-confirm-counts">
+                        <span className="boards-confirm-count boards-confirm-count--done">
+                            {showSprintConfirmModal.completedCount} completed
+                        </span>
+                        {showSprintConfirmModal.unfinishedCount > 0 && (
+                            <span className="boards-confirm-count boards-confirm-count--pending">
+                                {showSprintConfirmModal.unfinishedCount} unfinished
+                            </span>
+                        )}
+                    </div>
+                    <div className="boards-confirm-actions">
+                        <button
+                            type="button"
+                            className="boards-confirm-btn boards-confirm-btn--cancel"
+                            onClick={() => setShowSprintConfirmModal(null)}
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            className={`boards-confirm-btn boards-confirm-btn--confirm boards-confirm-btn--${showSprintConfirmModal.action}`}
+                            onClick={() => void handleSprintConfirm()}
+                        >
+                            {showSprintConfirmModal.action === 'stop' ? 'Stop Sprint' : 'Complete Sprint'}
+                        </button>
+                    </div>
+                </div>
+            </div>,
             document.body
         )}
         </>

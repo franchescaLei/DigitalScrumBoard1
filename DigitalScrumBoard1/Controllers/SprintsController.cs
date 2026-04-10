@@ -122,7 +122,9 @@ public sealed class SprintsController : ControllerBase
             EndDate = sprint.EndDate,
             Status = sprint.Status,
             ManagedBy = sprint.ManagedBy,
+            ManagedByName = FormatManagerDisplayName(sprint.Manager),
             TeamID = sprint.TeamID,
+            TeamName = sprint.Team?.TeamName,
             CreatedAt = sprint.CreatedAt,
             UpdatedAt = sprint.UpdatedAt
         }, ct);
@@ -176,7 +178,9 @@ public sealed class SprintsController : ControllerBase
             EndDate = sprint.EndDate,
             Status = sprint.Status,
             ManagedBy = sprint.ManagedBy,
-            TeamID = sprint.TeamID
+            ManagedByName = FormatManagerDisplayName(sprint.Manager),
+            TeamID = sprint.TeamID,
+            TeamName = sprint.Team?.TeamName
         };
 
         return CreatedAtAction(nameof(GetById), new { id = sprint.SprintID }, resp);
@@ -239,7 +243,9 @@ public sealed class SprintsController : ControllerBase
             endDate = sprint.EndDate,
             status = sprint.Status,
             managedBy = sprint.ManagedBy,
+            managedByName = FormatManagerDisplayName(sprint.Manager),
             teamID = sprint.TeamID,
+            teamName = sprint.Team?.TeamName,
             createdAt = sprint.CreatedAt,
             updatedAt = sprint.UpdatedAt
         });
@@ -284,6 +290,10 @@ public sealed class SprintsController : ControllerBase
             return Forbid();
 
         var isElevatedRole = IsElevatedSprintRole();
+
+        // Sprint Manager cannot edit sprint details — only Admin/Scrum Master can
+        if (!isElevatedRole)
+            return StatusCode(403, new { message = "Only administrators and scrum masters can edit sprint details." });
 
         if (req.ManagedBy.HasValue && !isElevatedRole)
             return Forbid();
@@ -408,7 +418,9 @@ public sealed class SprintsController : ControllerBase
             EndDate = sprint.EndDate,
             Status = sprint.Status,
             ManagedBy = sprint.ManagedBy,
+            ManagedByName = FormatManagerDisplayName(sprint.Manager),
             TeamID = sprint.TeamID,
+            TeamName = sprint.Team?.TeamName,
             UpdatedAt = sprint.UpdatedAt
         }, ct);
 
@@ -426,7 +438,9 @@ public sealed class SprintsController : ControllerBase
                 endDate = sprint.EndDate,
                 status = sprint.Status,
                 managedBy = sprint.ManagedBy,
+                managedByName = FormatManagerDisplayName(sprint.Manager),
                 teamID = sprint.TeamID,
+                teamName = sprint.Team?.TeamName,
                 createdAt = sprint.CreatedAt,
                 updatedAt = sprint.UpdatedAt
             }
@@ -821,5 +835,16 @@ public sealed class SprintsController : ControllerBase
             user.FindFirstValue("UserID");
 
         return int.TryParse(raw, out var id) ? id : null;
+    }
+
+    private static string? FormatManagerDisplayName(User? u)
+    {
+        if (u is null) return null;
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(u.FirstName)) parts.Add(u.FirstName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.MiddleName)) parts.Add(u.MiddleName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.LastName)) parts.Add(u.LastName.Trim());
+        if (!string.IsNullOrWhiteSpace(u.NameExtension)) parts.Add(u.NameExtension.Trim());
+        return parts.Count > 0 ? string.Join(' ', parts) : null;
     }
 }

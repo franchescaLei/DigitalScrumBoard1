@@ -75,4 +75,6 @@ public interface IWorkItemRepository
     Task<List<WorkItem>> GetWorkItemsBySprintIdAsync(int sprintId, CancellationToken ct);
 
     Task<List<WorkItem>> GetChildTasksByParentIdAsync(int parentId, CancellationToken ct);
+
+    Task<WorkItemHierarchyDto?> GetEpicHierarchyAsync(int epicId, CancellationToken ct);
 }

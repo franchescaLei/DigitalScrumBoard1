@@ -38,8 +38,8 @@ namespace DigitalScrumBoard1.Services
 
             await _db.SaveChangesAsync(ct);
 
-            var baseUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
-            var link = $"{baseUrl}/api/auth/verify-email?token={Uri.EscapeDataString(rawToken)}";
+            var frontendUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
+            var link = $"{frontendUrl}/api/auth/verify-email-redirect?token={Uri.EscapeDataString(rawToken)}";
 
             await _emailSender.SendAsync(
                 user.EmailAddress,
@@ -75,13 +75,17 @@ namespace DigitalScrumBoard1.Services
 
             await _db.SaveChangesAsync(ct);
 
-            var baseUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
-            var link = $"{baseUrl}/api/auth/verify-email?token={Uri.EscapeDataString(rawToken)}";
+            var frontendUrl = (_emailOptions.AppBaseUrl ?? "").TrimEnd('/');
+            var link = $"{frontendUrl}/api/auth/verify-email-redirect?token={Uri.EscapeDataString(rawToken)}";
 
             await _emailSender.SendAsync(
                 user.EmailAddress,
                 "Verify your email",
-                $"<p>Please verify your email by clicking:</p><p><a href=\"{link}\">Verify Email</a></p>",
+                $"""
+                <p>Please verify your email by clicking the link below:</p>
+                <p><a href="{link}" style="background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">Verify Email Address</a></p>
+                <p style="color: #6b7280; font-size: 14px; margin-top: 16px;">This link will expire in 24 hours. After verification, you'll be redirected to a confirmation page.</p>
+                """,
                 ct
             );
         }

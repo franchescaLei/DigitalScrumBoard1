@@ -209,14 +209,14 @@ export default function Header() {
 
     useEffect(() => {
         const conn = getNotificationHubConnection();
-        if (process.env.NODE_ENV !== "production") {
+        if (import.meta.env.DEV) {
             // Helpful diagnostics while we track notification toasts.
             // eslint-disable-next-line no-console
             console.debug("[Header] Subscribing to NotificationReceived / NotificationRead. Hub state:", conn.state);
         }
 
         const onReceived = (dto: unknown) => {
-            if (process.env.NODE_ENV !== "production") {
+            if (import.meta.env.DEV) {
                 // eslint-disable-next-line no-console
                 console.debug("[Header] NotificationReceived payload:", dto);
             }
@@ -228,7 +228,7 @@ export default function Header() {
         };
 
         const onReadBroadcast = (dto: Record<string, unknown>) => {
-            if (process.env.NODE_ENV !== "production") {
+            if (import.meta.env.DEV) {
                 // eslint-disable-next-line no-console
                 console.debug("[Header] NotificationRead broadcast:", dto);
             }

@@ -107,6 +107,31 @@ export const assignToSprint = async (workItemId: number, sprintId: number) =>
 export const removeFromSprint = async (workItemId: number) =>
     apiClient.put(`/api/workitems/${workItemId}/remove-sprint`);
 
+export const patchWorkItem = async (workItemId: number, payload: {
+    title?: string;
+    description?: string | null;
+    status?: string;
+    priority?: string | null;
+    dueDate?: string | null;
+    assignedUserID?: number | null;
+    clearAssignee?: boolean;
+    teamID?: number | null;
+    parentWorkItemID?: number | null;
+    sprintID?: number | null;
+}) =>
+    apiClient.patch(`/api/workitems/${workItemId}`, {
+        ...(payload.title && { title: payload.title }),
+        ...(payload.description !== undefined && { description: payload.description }),
+        ...(payload.status && { status: payload.status }),
+        ...(payload.priority !== undefined && { priority: payload.priority }),
+        ...(payload.dueDate !== undefined && { dueDate: payload.dueDate }),
+        ...(payload.assignedUserID !== undefined && { assignedUserID: payload.assignedUserID }),
+        ...(payload.clearAssignee && { clearAssignee: payload.clearAssignee }),
+        ...(payload.teamID !== undefined && { teamID: payload.teamID }),
+        ...(payload.parentWorkItemID !== undefined && { parentWorkItemID: payload.parentWorkItemID }),
+        ...(payload.sprintID !== undefined && { sprintID: payload.sprintID }),
+    });
+
 export const getWorkItemDetails = async (workItemId: number): Promise<WorkItemDetails> =>
     apiClient.get<WorkItemDetails>(`/api/workitems/${workItemId}/details`);
 

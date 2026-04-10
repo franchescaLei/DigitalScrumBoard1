@@ -132,11 +132,17 @@ public class BoardService : IBoardService
         if (normalizedStatus is null)
             throw new ArgumentException("Invalid status. Allowed values: To-do, Ongoing, For Checking, Completed.");
 
+        var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
+        if (sprint is null)
+            throw new InvalidOperationException("Sprint not found.");
+
+        // Authorization: Admin/Scrum Master, work item assignee, or Sprint Manager
         var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
-            item.AssignedUserID == userId;
+            item.AssignedUserID == userId ||
+            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId);
 
         if (!allowed)
         {
@@ -153,10 +159,6 @@ public class BoardService : IBoardService
 
             throw new UnauthorizedAccessException("You are not allowed to move this work item.");
         }
-
-        var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
-        if (sprint is null)
-            throw new InvalidOperationException("Sprint not found.");
 
         if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Sprint not active.");
@@ -219,6 +221,26 @@ public class BoardService : IBoardService
             };
         }
 
+        // Notify the sprint manager of all board movements in their sprint (unless they did it)
+        Notification? managerStatusNotification = null;
+        if (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value != userId)
+        {
+            // Avoid duplicate notification if sprint manager is also the assignee
+            if (!item.AssignedUserID.HasValue || item.AssignedUserID.Value != sprint.ManagedBy.Value)
+            {
+                managerStatusNotification = new Notification
+                {
+                    UserID = sprint.ManagedBy.Value,
+                    Message = $"Work item '{item.Title}' was moved from {oldStatus} to {normalizedStatus}.",
+                    NotificationType = "StatusChanged",
+                    RelatedWorkItemID = item.WorkItemID,
+                    RelatedSprintID = item.SprintID,
+                    CreatedAt = now,
+                    IsRead = false
+                };
+            }
+        }
+
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
@@ -259,8 +281,15 @@ public class BoardService : IBoardService
             throw;
         }
 
+        // Send notifications to assignee and/or sprint manager
+        var notificationsToSend = new List<Notification>();
         if (assigneeStatusNotification is not null)
-            await _notifications.AddNotificationsAsync(new[] { assigneeStatusNotification }, ct);
+            notificationsToSend.Add(assigneeStatusNotification);
+        if (managerStatusNotification is not null)
+            notificationsToSend.Add(managerStatusNotification);
+
+        if (notificationsToSend.Count > 0)
+            await _notifications.AddNotificationsAsync(notificationsToSend, ct);
 
         await _audit.LogAsync(
             userId,
@@ -327,11 +356,17 @@ public class BoardService : IBoardService
         if (!item.SprintID.HasValue)
             throw new InvalidOperationException("Work item is not assigned to a sprint.");
 
+        var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
+        if (sprint is null)
+            throw new InvalidOperationException("Sprint not found.");
+
+        // Authorization: Admin/Scrum Master, work item assignee, or Sprint Manager
         var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
-            item.AssignedUserID == userId;
+            item.AssignedUserID == userId ||
+            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId);
 
         if (!allowed)
         {
@@ -348,10 +383,6 @@ public class BoardService : IBoardService
 
             throw new UnauthorizedAccessException("You are not allowed to reorder this work item.");
         }
-
-        var sprint = await _repo.GetSprintAsync(item.SprintID.Value, ct);
-        if (sprint is null)
-            throw new InvalidOperationException("Sprint not found.");
 
         if (!string.Equals(sprint.Status, "Active", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Sprint not active.");

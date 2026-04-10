@@ -2,8 +2,9 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import apiClient from '../../services/apiClient';
 import type { AgendaWorkItem } from '../../types/planning';
 import { priorityAccentClass } from './planningUtils';
-import { lookupUsers, lookupTeams, type UserLookup } from '../../api/lookupsApi';
-import { getBoardHubConnection } from '../../services/boardHub';
+import { lookupUsers, lookupTeams } from '../../api/lookupsApi';
+import { getBoardHubConnection, ensureBoardHubStarted } from '../../services/boardHub';
+import { ApiError } from '../../services/apiClient';
 import { useDebounced } from './useDebounced';
 import { formatDateTime, formatDate } from '../../utils/dateFormatter';
 
@@ -42,15 +43,16 @@ const CancelIcon = () => (
     </svg>
 );
 
-const CommentIcon = () => (
+const TrashIcon = () => (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M12.5 1.5H1.5a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2l2 2.5 2-2.5h5a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        <path d="M2 4h10M5 4V2.5A.5.5 0 0 1 5.5 2h3a.5.5 0 0 1 .5.5V4M6 6.5v3M8 6.5v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M3 4l.7 7.5a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L11 4" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
     </svg>
 );
 
-const TrashIcon = () => (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-        <path d="M1.5 3h9M4 3V2h4v1M5 5.5v3M7 5.5v3M2 3l.7 7h6.6L10 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+const CommentIcon = () => (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <path d="M12.5 1.5H1.5a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2l2 2.5 2-2.5h5a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
     </svg>
 );
 
@@ -108,15 +110,6 @@ function getInitials(name: string | null | undefined): string {
 // ─────────────────────────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────
-
-function MetaChip({ label, value, accent }: { label: string; value: string; accent?: string }) {
-    return (
-        <div className="wi-meta-chip">
-            <span className="wi-meta-chip-label">{label}</span>
-            <span className="wi-meta-chip-value" style={accent ? { color: accent } : undefined}>{value}</span>
-        </div>
-    );
-}
 
 function SectionHeading({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
     return (
@@ -369,6 +362,10 @@ export function WorkItemDetailModal({
     const [commentLoading, setCommentLoading] = useState(false);
     const [commentError, setCommentError] = useState('');
 
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [deleteConfirmText, setDeleteConfirmText] = useState('');
+    const [deleting, setDeleting] = useState(false);
+
     const commentListRef = useRef<HTMLDivElement>(null);
     const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -498,16 +495,7 @@ export function WorkItemDetailModal({
                 .then(raw => {
                     const normalized: WorkItemDetails = {
                         ...raw,
-                        comments: (raw.comments ?? []).map((c: Record<string, unknown>) => ({
-                            commentID: Number((c.commentID ?? c.CommentID) ?? 0),
-                            workItemID: Number((c.workItemID ?? c.WorkItemID) ?? 0),
-                            commentedBy: Number((c.commentedBy ?? c.CommentedBy) ?? 0),
-                            commentedByName: String((c.commentedByName ?? c.CommentedByName) ?? ''),
-                            commentText: String((c.commentText ?? c.CommentText) ?? ''),
-                            createdAt: String((c.createdAt ?? c.CreatedAt) ?? ''),
-                            updatedAt: (c.updatedAt ?? c.UpdatedAt) as string | null | undefined,
-                            isDeleted: (c.isDeleted ?? c.IsDeleted) as boolean | null | undefined,
-                        })),
+                        comments: raw.comments ?? [],
                     };
                     setDetails(normalized);
                     setEditFields({
@@ -527,7 +515,60 @@ export function WorkItemDetailModal({
         };
         conn.on('WorkItemUpdated', handler);
         return () => { conn.off('WorkItemUpdated', handler); };
-    }, [item.workItemID, item.title, item.priority, item.status]);
+    }, [item.workItemID]);
+
+    // ── SignalR: listen for status changes ──
+    useEffect(() => {
+        const conn = getBoardHubConnection();
+        const handler = (payload: Record<string, unknown>) => {
+            const wid = Number(payload.workItemID ?? payload.WorkItemID ?? 0);
+            if (wid !== item.workItemID) return;
+            const newStatus = payload.newStatus ?? payload.status;
+            if (typeof newStatus === 'string' && newStatus) {
+                setDetails(prev => {
+                    if (!prev) return prev;
+                    return { ...prev, status: newStatus };
+                });
+            }
+        };
+
+        const start = async () => {
+            try {
+                await ensureBoardHubStarted();
+            } catch { /* hub unavailable — details still visible */ }
+            conn.on('WorkItemStatusChanged', handler);
+        };
+        void start();
+        return () => { conn.off('WorkItemStatusChanged', handler); };
+    }, [item.workItemID]);
+
+    // ── SignalR: listen for work item moves (drag-and-drop on board) ──
+    useEffect(() => {
+        const conn = getBoardHubConnection();
+        const handler = (payload: Record<string, unknown>) => {
+            const wid = Number(payload.workItemID ?? 0);
+            if (wid !== item.workItemID) return;
+
+            setDetails(prev => {
+                if (!prev) return prev;
+                const next: WorkItemDetails = { ...prev };
+                if (typeof payload.status === 'string') next.status = payload.status;
+                if (payload.assignedUserName !== undefined) next.assignedUserName = payload.assignedUserName as string | null;
+                if (payload.priority !== undefined) next.priority = payload.priority as string | null;
+                if (payload.workItemType !== undefined) next.typeName = payload.workItemType as string;
+                return next;
+            });
+        };
+
+        const start = async () => {
+            try {
+                await ensureBoardHubStarted();
+            } catch { /* hub unavailable — details still visible */ }
+            conn.on('WorkItemMoved', handler);
+        };
+        void start();
+        return () => { conn.off('WorkItemMoved', handler); };
+    }, [item.workItemID]);
 
     // ── Load details ───────────────────────────
     useEffect(() => {
@@ -537,19 +578,9 @@ export function WorkItemDetailModal({
         apiClient.get<WorkItemDetails>(`/api/workitems/${item.workItemID}/details`)
             .then(raw => {
                 if (!cancelled) {
-                    // Normalize comments from PascalCase to camelCase
                     const normalized: WorkItemDetails = {
                         ...raw,
-                        comments: (raw.comments ?? []).map((c: Record<string, unknown>) => ({
-                            commentID: Number((c.commentID ?? c.CommentID) ?? 0),
-                            workItemID: Number((c.workItemID ?? c.WorkItemID) ?? 0),
-                            commentedBy: Number((c.commentedBy ?? c.CommentedBy) ?? 0),
-                            commentedByName: String((c.commentedByName ?? c.CommentedByName) ?? ''),
-                            commentText: String((c.commentText ?? c.CommentText) ?? ''),
-                            createdAt: String((c.createdAt ?? c.CreatedAt) ?? ''),
-                            updatedAt: (c.updatedAt ?? c.UpdatedAt) as string | null | undefined,
-                            isDeleted: (c.isDeleted ?? c.IsDeleted) as boolean | null | undefined,
-                        })),
+                        comments: raw.comments ?? [],
                     };
                     setDetails(normalized);
                     setEditFields({
@@ -573,7 +604,7 @@ export function WorkItemDetailModal({
                 if (!cancelled) setLoadingDetails(false);
             });
         return () => { cancelled = true; };
-    }, [item.workItemID, item.title, item.priority, item.status]);
+    }, [item.workItemID]);
 
     // ── Focus title when edit mode activates ──
     useEffect(() => {
@@ -670,6 +701,21 @@ export function WorkItemDetailModal({
             // silently fail — SignalR will update the list
         }
     }, [item.workItemID]);
+
+    // ── Delete work item ───────────────────────
+    const handleDeleteWorkItem = useCallback(async () => {
+        if (deleteConfirmText.trim().toLowerCase() !== 'delete') return;
+        setDeleting(true);
+        try {
+            await apiClient.delete(`/api/workitems/${item.workItemID}`);
+            onClose();
+        } catch (err) {
+            setSaveError(err instanceof ApiError ? err.message : 'Failed to delete work item.');
+            setDeleting(false);
+            setShowDeleteConfirm(false);
+            setDeleteConfirmText('');
+        }
+    }, [item.workItemID, deleteConfirmText, onClose]);
 
     // ── Derived display values (merge details with initial item for fallback) ──
     const displayed: WorkItemDetails = details
@@ -887,6 +933,20 @@ export function WorkItemDetailModal({
                             </button>
                         </div>
                     )}
+
+                    {/* Delete button (Admin/SM only) */}
+                    {canManage && (
+                        <div className="wi-sidebar-actions wi-sidebar-actions--row" style={{ marginTop: 6 }}>
+                            <button
+                                type="button"
+                                className="wi-action-btn wi-action-btn--delete"
+                                onClick={() => setShowDeleteConfirm(true)}
+                                disabled={deleting}
+                            >
+                                <TrashIcon /> Delete
+                            </button>
+                        </div>
+                    )}
                 </aside>
 
                 {/* ── Main content (right) ──────────────── */}
@@ -1039,6 +1099,59 @@ export function WorkItemDetailModal({
                     )}
                 </div>
             </div>
+
+            {/* ── Delete Confirmation Modal ──────────── */}
+            {showDeleteConfirm && (
+                <div className="wi-delete-overlay" role="dialog" aria-modal="true" aria-label="Delete Work Item">
+                    <div className="wi-delete-dialog">
+                        <div className="wi-delete-icon">
+                            <TrashIcon />
+                        </div>
+                        <h3 className="wi-delete-title">Delete Work Item?</h3>
+                        <p className="wi-delete-message">
+                            {details?.typeName?.toLowerCase() === 'epic' || details?.typeName?.toLowerCase() === 'story'
+                                ? 'This will also delete all child work items. This action cannot be undone.'
+                                : 'This action cannot be undone.'}
+                        </p>
+                        <div className="wi-delete-confirm">
+                            <label className="wi-delete-label" htmlFor="wi-delete-confirm">
+                                Type <strong>Delete</strong> to confirm:
+                            </label>
+                            <input
+                                id="wi-delete-confirm"
+                                className="wi-delete-input"
+                                value={deleteConfirmText}
+                                onChange={e => setDeleteConfirmText(e.target.value)}
+                                placeholder="Delete"
+                                autoFocus
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter' && deleteConfirmText.trim().toLowerCase() === 'delete') {
+                                        void handleDeleteWorkItem();
+                                    }
+                                }}
+                            />
+                        </div>
+                        <div className="wi-delete-actions">
+                            <button
+                                type="button"
+                                className="wi-delete-btn wi-delete-btn--cancel"
+                                onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(''); }}
+                                disabled={deleting}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="wi-delete-btn wi-delete-btn--confirm"
+                                onClick={() => void handleDeleteWorkItem()}
+                                disabled={deleteConfirmText.trim().toLowerCase() !== 'delete' || deleting}
+                            >
+                                {deleting ? 'Deleting…' : 'Delete'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── User Picker Modal ───────────────────── */}
             {showUserPicker && (
