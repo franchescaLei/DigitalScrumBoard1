@@ -106,6 +106,7 @@ public class BoardService : IBoardService
         {
             SprintID = sprint.SprintID,
             SprintName = sprint.SprintName,
+            SprintManagerId = sprint.ManagedBy,
             SprintManagerName = sprintManagerName,
             Todo = BuildColumn(filteredList, "To-do", normalizedSortBy, normalizedSortDirection),
             Ongoing = BuildColumn(filteredList, "Ongoing", normalizedSortBy, normalizedSortDirection),

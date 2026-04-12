@@ -38,6 +38,8 @@ import {
     normTypeName,
     formatDateRange,
     canManageSprint,
+    canStartStopSprint,
+    canDeleteSprint,
     sprintManagerLabel,
     priorityAccentClass,
     sprintStatusClass,
@@ -649,11 +651,34 @@ export default function BacklogsPage() {
         setManageOpen(true);
     };
 
-    const saveManage = async () => {
+    const saveManage = async (patch?: {
+        sprintName?: string;
+        goal?: string;
+        startDate?: string | null;
+        endDate?: string | null;
+        managedBy?: number | null;
+        teamID?: number | null;
+    }) => {
         if (manageSprintId === null) return;
+
+        // Use the patch from the modal if provided, otherwise fall back to local state
+        const finalSprintName = patch?.sprintName ?? manageSprintName.trim();
+        const finalGoal = patch?.goal ?? manageGoal.trim();
+        const finalStart = patch?.startDate ?? manageStartDate;
+        const finalEnd = patch?.endDate ?? manageEndDate;
+        const finalManagedBy = patch?.managedBy ?? manageManagedBy;
+        const finalTeamId = patch?.teamID ?? manageTeamId;
+
         setManageLoading(true); setManageError('');
         try {
-            await patchSprint(manageSprintId, { sprintName: manageSprintName.trim(), goal: manageGoal.trim(), startDate: manageStartDate || null, endDate: manageEndDate || null, managedBy: manageManagedBy, teamID: manageTeamId });
+            await patchSprint(manageSprintId, {
+                sprintName: finalSprintName,
+                goal: finalGoal,
+                startDate: finalStart || null,
+                endDate: finalEnd || null,
+                managedBy: finalManagedBy,
+                teamID: finalTeamId,
+            });
             showStatus({ kind: 'success', message: 'Sprint updated.' });
             await loadSprints();
             resetManage();
@@ -775,27 +800,32 @@ export default function BacklogsPage() {
                         <h1 className="backlogs-page-heading">Planning Workspace</h1>
                     </div>
                     <div style={{ position: 'relative' }}>
-                        <button
-                            className="btn-add-item"
-                            onClick={() => setAddItemMenuOpen(v => !v)}
-                            aria-haspopup="menu"
-                            aria-expanded={addItemMenuOpen}
-                        >
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                                <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                            </svg>
-                            Add Item
-                        </button>
-                        {addItemMenuOpen && (() => {
+                        {(() => {
                             const isAdminOrSM = me?.roleName === 'Administrator' || me?.roleName === 'Scrum Master' || me?.roleName === 'ScrumMaster';
+                            if (!isAdminOrSM) return null;
                             return (
-                                <AddItemMenu
-                                    onSelect={t => { setAddItemTarget(t); setAddItemMenuOpen(false); }}
-                                    onClose={() => setAddItemMenuOpen(false)}
-                                    canCreateEpic={isAdminOrSM}
-                                    canCreateWorkItem={isAdminOrSM}
-                                    canCreateSprint={isAdminOrSM}
-                                />
+                                <>
+                                    <button
+                                        className="btn-add-item"
+                                        onClick={() => setAddItemMenuOpen(v => !v)}
+                                        aria-haspopup="menu"
+                                        aria-expanded={addItemMenuOpen}
+                                    >
+                                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                            <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                        </svg>
+                                        Add Item
+                                    </button>
+                                    {addItemMenuOpen && (
+                                        <AddItemMenu
+                                            onSelect={t => { setAddItemTarget(t); setAddItemMenuOpen(false); }}
+                                            onClose={() => setAddItemMenuOpen(false)}
+                                            canCreateEpic={isAdminOrSM}
+                                            canCreateWorkItem={isAdminOrSM}
+                                            canCreateSprint={isAdminOrSM}
+                                        />
+                                    )}
+                                </>
                             );
                         })()}
                     </div>
@@ -1068,6 +1098,7 @@ export default function BacklogsPage() {
                                     {sprints.map(s => {
                                         const expanded = expandedSprintIds.has(s.sprintID);
                                         const canManage = canManageSprint(me, s);
+                                        const canStartStop = canStartStopSprint(me, s);
                                         const dropDisabled = s.status === 'Completed' || !canManage;
                                         const dropActive = dragOverSprintId === s.sprintID;
                                         const menuOpenHere = sprintMenuAnchor?.sprintId === s.sprintID;
@@ -1161,10 +1192,10 @@ export default function BacklogsPage() {
                                                         )}
                                                         {canManage && s.status !== 'Completed' && (
                                                             <div className="sprint-expanded-actions">
-                                                                {s.status === 'Planned' && (
+                                                                {s.status === 'Planned' && canStartStop && (
                                                                     <button className="btn-primary" type="button" onClick={() => void handleSprintLifecycle('start', s.sprintID)}>Start Sprint</button>
                                                                 )}
-                                                                {s.status === 'Active' && (
+                                                                {s.status === 'Active' && canStartStop && (
                                                                     <>
                                                                         <button className="btn-ghost" type="button" onClick={() => void handleSprintLifecycle('stop', s.sprintID)}>Stop</button>
                                                                         <button className="btn-primary" type="button" onClick={() => void handleSprintLifecycle('complete', s.sprintID)}>Complete</button>
@@ -1363,9 +1394,11 @@ export default function BacklogsPage() {
                         const s = sprints.find((x) => x.sprintID === sprintMenuAnchor.sprintId);
                         if (!s) return null;
                         const canManage = canManageSprint(me, s);
+                        const canStartStop = canStartStopSprint(me, s);
+                        const canDelete = canDeleteSprint(me, s);
                         const closeMenu = () => setSprintMenuAnchor(null);
-                        const guarded = (fn: () => void | Promise<void>) => {
-                            if (!canManage) return;
+                        const guardedWithPermission = (permission: boolean, fn: () => void | Promise<void>) => {
+                            if (!permission) return;
                             closeMenu();
                             void fn();
                         };
@@ -1387,8 +1420,8 @@ export default function BacklogsPage() {
                                         type="button"
                                         role="menuitem"
                                         className="adm-picker-option"
-                                        disabled={!canManage}
-                                        onClick={() => guarded(() => { void handleSprintLifecycle('start', s.sprintID); })}
+                                        disabled={!canStartStop}
+                                        onClick={() => guardedWithPermission(canStartStop, () => void handleSprintLifecycle('start', s.sprintID))}
                                     >
                                         Start Sprint
                                     </button>
@@ -1399,8 +1432,8 @@ export default function BacklogsPage() {
                                             type="button"
                                             role="menuitem"
                                             className="adm-picker-option"
-                                            disabled={!canManage}
-                                            onClick={() => guarded(() => { void handleSprintLifecycle('stop', s.sprintID); })}
+                                            disabled={!canStartStop}
+                                            onClick={() => guardedWithPermission(canStartStop, () => void handleSprintLifecycle('stop', s.sprintID))}
                                         >
                                             Stop Sprint
                                         </button>
@@ -1408,8 +1441,8 @@ export default function BacklogsPage() {
                                             type="button"
                                             role="menuitem"
                                             className="adm-picker-option"
-                                            disabled={!canManage}
-                                            onClick={() => guarded(() => { void handleSprintLifecycle('complete', s.sprintID); })}
+                                            disabled={!canStartStop}
+                                            onClick={() => guardedWithPermission(canStartStop, () => void handleSprintLifecycle('complete', s.sprintID))}
                                         >
                                             Complete Sprint
                                         </button>
@@ -1439,8 +1472,8 @@ export default function BacklogsPage() {
                                         type="button"
                                         role="menuitem"
                                         className="adm-picker-option sprint-picker-option--danger"
-                                        disabled={!canManage}
-                                        onClick={() => guarded(() => { setDeleteConfirmSprintId(s.sprintID); })}
+                                        disabled={!canDelete}
+                                        onClick={() => guardedWithPermission(canDelete, () => { setDeleteConfirmSprintId(s.sprintID); })}
                                     >
                                         Delete Sprint
                                     </button>
@@ -1471,15 +1504,9 @@ export default function BacklogsPage() {
             {/* Work item detail */}
             {detailItem && (() => {
                 const isAdminOrSM = me?.roleName === 'Administrator' || me?.roleName === 'Scrum Master' || me?.roleName === 'ScrumMaster';
-                const isOwner = detailItem.assignedUserID === me?.userID;
-                // Check if user is the Sprint Owner of the sprint this item belongs to
-                let isSprintOwner = false;
-                if (detailItem.sprintID && me?.userID) {
-                    const sprint = sprints.find(s => s.sprintID === detailItem.sprintID);
-                    if (sprint?.managedBy === me.userID) isSprintOwner = true;
-                }
-                const canManage = isAdminOrSM; // Only Admin/SM can change assignee/team/priority
-                const canEdit = isAdminOrSM || isOwner || isSprintOwner;
+                const canManage = isAdminOrSM;
+                // Find the sprint that this work item belongs to
+                const itemSprint = sprints.find(s => s.sprintID === detailItem.sprintID) ?? null;
                 return (
                     <WorkItemDetailModal
                         item={detailItem}
@@ -1491,9 +1518,10 @@ export default function BacklogsPage() {
                             }
                         }}
                         canManage={canManage}
-                        canEdit={canEdit}
-                        canChangeAssignee={canManage || isSprintOwner}
-                        currentUserId={me?.userID ?? null}
+                        canEdit={canManage}
+                        canChangeAssignee={canManage}
+                        currentUser={me ? { userID: me.userID, roleName: me.roleName } : null}
+                        currentSprint={itemSprint}
                     />
                 );
             })()}
@@ -1578,7 +1606,16 @@ export default function BacklogsPage() {
                     setManageTeamId={setManageTeamId}
                     manageLoading={manageLoading}
                     manageError={manageError}
-                    onSave={async () => { await saveManage(); }}
+                    onSave={async (patch) => { await saveManage(patch); }}
+                    onRemoveWorkItem={async (workItemId) => {
+                        try {
+                            await removeFromSprint(workItemId);
+                            await loadSprints();
+                            await refreshExpandedSprints();
+                        } catch (err) {
+                            console.error('Failed to remove work item from sprint:', err);
+                        }
+                    }}
                     me={me}
                 />
             )}

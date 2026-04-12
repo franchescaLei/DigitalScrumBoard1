@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import apiClient from '../../services/apiClient';
-import type { AgendaWorkItem } from '../../types/planning';
+import type { AgendaWorkItem, SprintSummary } from '../../types/planning';
 import { priorityAccentClass } from './planningUtils';
 import { lookupUsers, lookupTeams } from '../../api/lookupsApi';
 import { getBoardHubConnection, ensureBoardHubStarted } from '../../services/boardHub';
@@ -322,7 +322,8 @@ export function WorkItemDetailModal({
     canManage = false,
     canEdit = false,
     canChangeAssignee = false,
-    currentUserId = null,
+    currentUser = null,
+    currentSprint = null,
 }: {
     item: AgendaWorkItem;
     onClose: () => void;
@@ -330,8 +331,20 @@ export function WorkItemDetailModal({
     canManage?: boolean;
     canEdit?: boolean;
     canChangeAssignee?: boolean;
-    currentUserId?: number | null;
+    currentUser?: { userID: number; roleName: string } | null;
+    currentSprint?: SprintSummary | null;
 }) {
+    // Comments are allowed for:
+    // - Work item assignee
+    // - Sprint Manager (if the work item is in their sprint)
+    // - Admin/Scrum Master
+    const canComment = currentUser != null && (
+        currentUser.userID === item.assignedUserID ||
+        currentUser.roleName.trim().toLowerCase() === 'administrator' ||
+        currentUser.roleName.trim().toLowerCase() === 'scrum master' ||
+        currentUser.roleName.trim().toLowerCase() === 'scrummaster' ||
+        (currentSprint != null && currentSprint.managedBy !== null && currentUser.userID === currentSprint.managedBy)
+    );
     // ── State ──────────────────────────────────
     const [details, setDetails] = useState<WorkItemDetails | null>(null);
     const [loadingDetails, setLoadingDetails] = useState(true);
@@ -1045,8 +1058,8 @@ export function WorkItemDetailModal({
                                                 <CommentCard
                                                     key={comment.commentID}
                                                     comment={comment}
-                                                    canEdit={comment.commentedBy === currentUserId}
-                                                    canDelete={comment.commentedBy === currentUserId || canManage}
+                                                    canEdit={comment.commentedBy === currentUser?.userID}
+                                                    canDelete={comment.commentedBy === currentUser?.userID || canManage}
                                                     onDelete={handleDeleteComment}
                                                     onEdit={handleEditComment}
                                                 />
@@ -1055,7 +1068,7 @@ export function WorkItemDetailModal({
                                 </div>
 
                                 {/* Comment composer */}
-                                {canEdit && (
+                                {canComment && (
                                     <div className="wi-comment-composer">
                                         <div className="wi-composer-avatar">
                                             <PinIcon />

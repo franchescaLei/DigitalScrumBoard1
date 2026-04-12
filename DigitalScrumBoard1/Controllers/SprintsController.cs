@@ -299,6 +299,7 @@ public sealed class SprintsController : ControllerBase
             return Forbid();
 
         var changedFields = new List<string>();
+        int? oldManagerIdBeforeUpdate = sprint.ManagedBy;
 
         if (req.SprintName is not null)
         {
@@ -380,15 +381,56 @@ public sealed class SprintsController : ControllerBase
         }
 
         var assignedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
-        var notifications = assignedUserIds.Select(assignedUserId => new Notification
+        var notifications = new List<Notification>();
+
+        // Notify users with work items in this sprint
+        foreach (var assignedUserId in assignedUserIds)
         {
-            UserID = assignedUserId,
-            RelatedSprintID = id,
-            NotificationType = "SprintUpdated",
-            Message = $"Sprint '{sprint.SprintName}' has been updated.",
-            CreatedAt = DateTimeHelper.Now,
-            IsRead = false
-        }).ToList();
+            notifications.Add(new Notification
+            {
+                UserID = assignedUserId,
+                RelatedSprintID = id,
+                NotificationType = "SprintUpdated",
+                Message = $"Sprint '{sprint.SprintName}' has been updated.",
+                CreatedAt = DateTimeHelper.Now,
+                IsRead = false
+            });
+        }
+
+        // Notify old and new manager when ManagedBy changes
+        var managedByChanged = changedFields.Any(f => f.StartsWith("ManagedBy:"));
+        if (managedByChanged)
+        {
+            var newManagerId = req.ManagedBy;
+
+            // Notify old manager (if different from new manager and not self)
+            if (oldManagerIdBeforeUpdate.HasValue && oldManagerIdBeforeUpdate != newManagerId && oldManagerIdBeforeUpdate != userId)
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = oldManagerIdBeforeUpdate.Value,
+                    RelatedSprintID = id,
+                    NotificationType = "SprintManagerRemoved",
+                    Message = $"You are no longer the manager of sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+
+            // Notify new manager (if not self)
+            if (newManagerId.HasValue && newManagerId != userId)
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = newManagerId.Value,
+                    RelatedSprintID = id,
+                    NotificationType = "SprintManagerAssigned",
+                    Message = $"You have been assigned as the manager of sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
 
         sprint.UpdatedAt = DateTimeHelper.Now;
         await _repo.SaveChangesAsync(ct);

@@ -29,9 +29,10 @@ import {
 import type { UserProfile } from '../../types/auth';
 import type { AgendaWorkItem, SprintSummary } from '../../types/planning';
 import { isElevatedWorkspaceRole } from '../../utils/userProfile';
+import { canEditSprintMetadata } from './planningUtils';
 import { patchSprint as patchSprintApi, getSprintDetails } from '../../api/sprintsApi';
 import { getBoardHubConnection, ensureBoardHubStarted } from '../../services/boardHub';
-import { lookupUsers } from '../../api/lookupsApi';
+import { lookupUsers, lookupTeams } from '../../api/lookupsApi';
 import '../../styles/manage sprint modal.css';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -76,8 +77,6 @@ export interface ManageSprintModalProps {
     setManageTeamId?: (value: number | null) => void;
     manageLoading?: boolean;
     manageError?: string;
-    /** Callback for notifying related users about changes */
-    onNotifyChanges?: (message: string, users?: number[]) => void;
 }
 
 export interface SprintPatch {
@@ -234,7 +233,7 @@ function useSprintHubEvents(
             const item: AgendaWorkItem = {
                 workItemID: Number(payload.workItemID ?? 0),
                 title: String(payload.title ?? ''),
-                typeName: String(payload.workItemType ?? payload.workItemType ?? 'Task'),
+                typeName: String(payload.workItemType ?? payload.WorkItemType ?? 'Task'),
                 status: String(payload.status ?? ''),
                 priority: (payload.priority as string | null | undefined) ?? null,
                 dueDate: (payload.dueDate as string | null | undefined) ?? null,
@@ -421,6 +420,7 @@ function WorkItemRow({
     canManage,
     searchLower,
     users,
+    quickEditMode = false,
 }: {
     node: SprintWorkItemNode;
     depth: number;
@@ -432,11 +432,12 @@ function WorkItemRow({
     canManage: boolean;
     searchLower: string;
     users?: Array<{ userID: number; displayName: string }>;
+    quickEditMode?: boolean;
 }) {
     const { item, children } = node;
     const isExpanded = expandedIds.has(item.workItemID);
     const hasChildren = children.length > 0;
-    const [showAssignMenu, setShowAssignMenu] = useState(false);
+    const [showAssignPicker, setShowAssignPicker] = useState(false);
 
     const titleMatch = searchLower
         ? item.title.toLowerCase().includes(searchLower)
@@ -450,6 +451,14 @@ function WorkItemRow({
 
     const currentAssignee = (item as AgendaWorkItem & { assignedUserName?: string | null }).assignedUserName
         ?? (item.assignedUserID ? `User #${item.assignedUserID}` : null);
+
+    const pickerUsers = useMemo(() => {
+        if (!users) return [];
+        return [
+            { id: 0, name: '— Unassigned —', meta: '' },
+            ...users.map(u => ({ id: u.userID, name: u.displayName, meta: '' })),
+        ];
+    }, [users]);
 
     return (
         <>
@@ -502,48 +511,37 @@ function WorkItemRow({
                     <span className="msm-wi-due">{formatDate(item.dueDate)}</span>
                 </td>
 
-                {/* Assignee - clickable to change */}
+                {/* Assignee + actions inline */}
                 <td className="msm-td msm-td--assignee">
-                    {canManage && onAssignUser && users ? (
-                        <div className="msm-assignee-cell" style={{ position: 'relative' }}>
-                            <button
-                                type="button"
-                                className="msm-assignee-btn"
-                                onClick={() => setShowAssignMenu(!showAssignMenu)}
-                                title="Click to change assignee"
-                            >
+                    {canManage && onAssignUser && quickEditMode ? (
+                        <div className="msm-wi-assignee-inline">
+                            <span className="msm-wi-assignee-name">
                                 {currentAssignee ?? 'Unassigned'}
-                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                                    <path d="M3 4l2 2 2-2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                                </svg>
-                            </button>
-                            {showAssignMenu && (
-                                <div className="msm-assignee-menu">
+                            </span>
+                            <div className="msm-wi-assignee-actions">
+                                <button
+                                    type="button"
+                                    className="msm-wi-icon-btn"
+                                    onClick={() => setShowAssignPicker(true)}
+                                    title={item.assignedUserID ? 'Change assignee' : 'Assign'}
+                                >
+                                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                        <path d="M9.5 1.5l3 3L4 13H1v-3L9.5 1.5Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                                    </svg>
+                                </button>
+                                {onRemove && (
                                     <button
                                         type="button"
-                                        className="msm-assignee-option"
-                                        onClick={() => {
-                                            onAssignUser(item.workItemID, null);
-                                            setShowAssignMenu(false);
-                                        }}
+                                        className="msm-wi-icon-btn msm-wi-icon-btn--danger"
+                                        onClick={() => onRemove(item.workItemID)}
+                                        title="Remove from sprint"
                                     >
-                                        Unassigned
+                                        <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                        </svg>
                                     </button>
-                                    {users?.map(u => (
-                                        <button
-                                            key={u.userID}
-                                            type="button"
-                                            className={`msm-assignee-option${item.assignedUserID === u.userID ? ' msm-assignee-option--selected' : ''}`}
-                                            onClick={() => {
-                                                onAssignUser(item.workItemID, u.userID);
-                                                setShowAssignMenu(false);
-                                            }}
-                                        >
-                                            {u.displayName}
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
+                                )}
+                            </div>
                         </div>
                     ) : (
                         <span className="msm-wi-assignee">
@@ -551,27 +549,22 @@ function WorkItemRow({
                         </span>
                     )}
                 </td>
-
-                {/* Actions - compact */}
-                {canManage && (
-                    <td className="msm-td msm-td--actions">
-                        <div className="msm-wi-actions msm-wi-actions--compact">
-                            {onRemove && (
-                                <button
-                                    type="button"
-                                    className="msm-wi-btn msm-wi-btn--remove"
-                                    title="Remove from sprint"
-                                    onClick={() => onRemove(item.workItemID)}
-                                >
-                                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                                        <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                                    </svg>
-                                </button>
-                            )}
-                        </div>
-                    </td>
-                )}
             </tr>
+
+            {/* Assignee picker modal */}
+            {showAssignPicker && onAssignUser && (
+                <PickerModal
+                    title="Change Assignee"
+                    onClose={() => setShowAssignPicker(false)}
+                    onPick={(id, _name) => {
+                        onAssignUser(item.workItemID, id === 0 ? null : id);
+                        setShowAssignPicker(false);
+                    }}
+                    items={pickerUsers}
+                    loading={false}
+                    preselectedId={item.assignedUserID}
+                />
+            )}
 
             {/* Children (recursive) */}
             {isExpanded && children.map(child => (
@@ -587,9 +580,105 @@ function WorkItemRow({
                     canManage={canManage}
                     searchLower={searchLower}
                     users={users}
+                    quickEditMode={quickEditMode}
                 />
             ))}
         </>
+    );
+}
+
+// ─── Picker Modal (for manager and team selection) ───────────────────────────
+
+function PickerModal({
+    title,
+    onClose,
+    onPick,
+    items,
+    loading,
+    preselectedId,
+}: {
+    title: string;
+    onClose: () => void;
+    onPick: (id: number, name: string) => void;
+    items: { id: number; name: string; meta: string }[];
+    loading: boolean;
+    preselectedId: number | null;
+}) {
+    const [search, setSearch] = useState('');
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
+
+    const filtered = useMemo(() => {
+        if (!search.trim()) return items;
+        const q = search.toLowerCase();
+        return items.filter(i =>
+            i.name.toLowerCase().includes(q) || i.meta.toLowerCase().includes(q)
+        );
+    }, [items, search]);
+
+    const [pickedId, setPickedId] = useState<number | null>(preselectedId);
+    useEffect(() => {
+        setPickedId(preselectedId);
+    }, [preselectedId]);
+
+    const selected = items.find(i => i.id === pickedId);
+
+    return (
+        <div className="msm-picker-overlay" role="dialog" aria-modal="true" aria-label={title} onClick={onClose}>
+            <div className="msm-picker-modal" onClick={e => e.stopPropagation()}>
+                <div className="msm-picker-header">
+                    <h3>{title}</h3>
+                    <button type="button" className="msm-picker-close" onClick={onClose} aria-label="Close">
+                        ×
+                    </button>
+                </div>
+                <div className="msm-picker-search">
+                    <input
+                        className="msm-picker-input"
+                        placeholder="Search…"
+                        value={search}
+                        onChange={e => setSearch(e.target.value)}
+                        autoFocus
+                    />
+                </div>
+                <div className="msm-picker-list">
+                    {loading ? (
+                        <div className="msm-picker-loading">Loading…</div>
+                    ) : filtered.length === 0 ? (
+                        <div className="msm-picker-empty">No results.</div>
+                    ) : (
+                        filtered.map(item => (
+                            <button
+                                key={item.id}
+                                type="button"
+                                className={`msm-picker-item${pickedId === item.id ? ' msm-picker-item--selected' : ''}`}
+                                onClick={() => setPickedId(item.id)}
+                            >
+                                <span className="msm-picker-item-name">{item.name}</span>
+                                {item.meta && <span className="msm-picker-item-meta">{item.meta}</span>}
+                            </button>
+                        ))
+                    )}
+                </div>
+                <div className="msm-picker-footer">
+                    <button type="button" className="msm-btn msm-btn--cancel" onClick={onClose}>
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        className="msm-btn msm-btn--save"
+                        disabled={!selected}
+                        onClick={() => selected && onPick(selected.id, selected.name)}
+                    >
+                        {preselectedId ? 'Update' : 'Assign'}
+                    </button>
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -617,11 +706,11 @@ export function ManageSprintModal({
     manageEndDate,
     setManageEndDate,
     manageManagedBy: _manageManagedBy,
+    setManageManagedBy,
     manageTeamId: _manageTeamId,
     setManageTeamId,
     manageLoading: _manageLoading,
     manageError: _manageError,
-    onNotifyChanges,
 }: ManageSprintModalProps) {
 
     // Determine if we're using legacy mode (from BacklogsPage) or new mode
@@ -671,6 +760,11 @@ export function ManageSprintModal({
     const [dateError, setDateError] = useState('');
     const [goalError, setGoalError] = useState('');
 
+    // ── Users for assignee resolution (must be before useSprintHubEvents) ───
+    const [users, setUsers] = useState<Array<{ userID: number; displayName: string }>>([]);
+    const usersRef = useRef(users);
+    useEffect(() => { usersRef.current = users; }, [users]);
+
     // ── Live items (SignalR-ready local state) ──────────────────────────────
     const [liveItems, setLiveItems] = useState<AgendaWorkItem[]>(workItems);
     const [dataLoading, setDataLoading] = useState(false);
@@ -709,6 +803,7 @@ export function ManageSprintModal({
                         if (setManageStartDate) setManageStartDate(sprint.startDate ?? '');
                         if (setManageEndDate) setManageEndDate(sprint.endDate ?? '');
                         if (setManageTeamId) setManageTeamId(sprint.teamID ?? null);
+                        if (setManageManagedBy) setManageManagedBy(sprint.managedBy ?? null);
                     }
                 }
             } catch (err) {
@@ -776,26 +871,55 @@ export function ManageSprintModal({
                     setManageTeamId(newTeamID);
                 }
             }
+            // Handle manager changes from SignalR broadcast
+            if (patch.managedBy !== undefined) {
+                const newManagedBy = patch.managedBy ?? null;
+                setManagedBy(newManagedBy);
+            }
+            if (patch.managedByName !== undefined) {
+                const newManagedByName = patch.managedByName ?? null;
+                setManagedByName(newManagedByName);
+            }
+            if (patch.teamName !== undefined) {
+                const newTeamName = patch.teamName ?? null;
+                setTeamName(newTeamName);
+            }
         },
         onWorkItemAdded: (item) =>
             setLiveItems(prev => prev.some(i => i.workItemID === item.workItemID) ? prev : [...prev, item]),
         onWorkItemRemoved: (id) =>
             setLiveItems(prev => prev.filter(i => i.workItemID !== id)),
         onWorkItemUpdated: (item) =>
-            setLiveItems(prev => prev.map(i => i.workItemID === item.workItemID ? { ...i, ...item } : i)),
+            setLiveItems(prev => prev.map(i => {
+                if (i.workItemID !== item.workItemID) return i;
+                const resolvedName = item.assignedUserID
+                    ? (usersRef.current.find(u => u.userID === item.assignedUserID)?.displayName ?? null)
+                    : null;
+                return {
+                    ...i,
+                    ...item,
+                    typeName: item.typeName || i.typeName,
+                    parentWorkItemID: item.parentWorkItemID ?? i.parentWorkItemID,
+                    assignedUserName: resolvedName ?? i.assignedUserName,
+                };
+            })),
         onWorkItemStatusChanged: (workItemId, newStatus) =>
             setLiveItems(prev => prev.map(i =>
                 i.workItemID === workItemId ? { ...i, status: newStatus } : i
             )),
         onWorkItemMoved: (item) =>
-            setLiveItems(prev => prev.map(i =>
-                i.workItemID === item.workItemID ? { ...i, ...item } : i
-            )),
+            setLiveItems(prev => prev.map(i => {
+                if (i.workItemID !== item.workItemID) return i;
+                return {
+                    ...i,
+                    ...item,
+                    typeName: item.typeName || i.typeName,
+                    parentWorkItemID: item.parentWorkItemID ?? i.parentWorkItemID,
+                    assignedUserName: item.assignedUserName ?? i.assignedUserName,
+                };
+            })),
     });
 
-    // ── Users for assignee dropdown ─────────────────────────────────────────
-    const [users, setUsers] = useState<Array<{ userID: number; displayName: string }>>([]);
-    
     useEffect(() => {
         if (!userCanEdit) return;
 
@@ -816,6 +940,57 @@ export function ManageSprintModal({
         fetchUsers();
         return () => { cancelled = true; };
     }, [userCanEdit]);
+
+    // ── Sprint manager and team picker state ────────────────────────────────
+    const canEditSprintMeta = canEditSprintMetadata(me, effectiveSprint);
+    const [showManagerPicker, setShowManagerPicker] = useState(false);
+    const [showTeamPicker, setShowTeamPicker] = useState(false);
+    const [pickerUsers, setPickerUsers] = useState<Array<{ id: number; name: string; meta: string }>>([]);
+    const [pickerTeams, setPickerTeams] = useState<Array<{ id: number; name: string; meta: string }>>([]);
+    const [pickerLoading, setPickerLoading] = useState(false);
+
+    useEffect(() => {
+        if (!showManagerPicker && !showTeamPicker) return;
+
+        let cancelled = false;
+        const loadData = async () => {
+            setPickerLoading(true);
+            try {
+                if (showManagerPicker) {
+                    const userList = await lookupUsers({ search: '', limit: 200 });
+                    if (!cancelled) {
+                        setPickerUsers([
+                            { id: 0, name: '— No Manager —', meta: '' },
+                            ...userList.map(u => ({
+                                id: u.userID,
+                                name: u.displayName || `User #${u.userID}`,
+                                meta: u.emailAddress || ''
+                            }))
+                        ]);
+                    }
+                }
+                if (showTeamPicker) {
+                    const teamList = await lookupTeams({ search: '', limit: 200 });
+                    if (!cancelled) {
+                        setPickerTeams([
+                            { id: 0, name: '— No Team —', meta: '' },
+                            ...teamList.map(t => ({
+                                id: t.teamID,
+                                name: t.teamName,
+                                meta: ''
+                            }))
+                        ]);
+                    }
+                }
+            } catch (err) {
+                console.warn('Failed to load picker data:', err);
+            } finally {
+                if (!cancelled) setPickerLoading(false);
+            }
+        };
+        loadData();
+        return () => { cancelled = true; };
+    }, [showManagerPicker, showTeamPicker]);
 
     // ── Handler: Assign/Reassign work item to user ──────────────────────────
     const handleAssignUser = useCallback(async (workItemId: number, userId: number | null) => {
@@ -853,6 +1028,7 @@ export function ManageSprintModal({
     const [filterType, setFilterType] = useState<FilterType>('All');
     const [filterStatus, setFilterStatus] = useState<FilterStatus>('All');
     const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+    const [quickEditMode, setQuickEditMode] = useState(false);
     const [filterMenuOpen, setFilterMenuOpen] = useState(false);
     const [sortMenuOpen, setSortMenuOpen] = useState(false);
     const filterRef = useRef<HTMLDivElement>(null);
@@ -988,6 +1164,7 @@ export function ManageSprintModal({
         setSaving(true);
         setSaveError('');
         try {
+            // Build the patch payload - only include managedBy and teamID if user has permission
             const patch: SprintPatch = {
                 sprintName: name.trim(),
                 goal: goal.trim(),
@@ -995,60 +1172,26 @@ export function ManageSprintModal({
                 endDate: endDate || null,
             };
 
-            // If we have onSave callback (new interface), use it
-            if (onSave) {
-                await onSave(patch);
-            } else if (isLegacyMode && effectiveSprint.sprintID > 0) {
-                // Legacy mode: directly call the API
-                await patchSprintApi(effectiveSprint.sprintID, {
-                    sprintName: patch.sprintName,
-                    goal: patch.goal,
-                    startDate: patch.startDate,
-                    endDate: patch.endDate,
-                    managedBy: _manageManagedBy ?? null,
-                    teamID: _manageTeamId ?? null,
-                });
+            if (canEditSprintMeta) {
+                patch.managedBy = managedBy;
+                patch.teamID = teamID;
             }
 
-            // Broadcast changes via SignalR to other connected clients
-            // NOTE: This requires backend hub method 'BroadcastSprintUpdate' to be implemented
+            // Call the API to update the sprint
             if (effectiveSprint.sprintID > 0) {
-                try {
-                    const conn = getBoardHubConnection();
-                    if (conn && conn.state === 'Connected') {
-                        // Only attempt broadcast if the hub connection is active
-                        await conn.invoke('BroadcastSprintUpdate', {
-                            sprintID: effectiveSprint.sprintID,
-                            sprintName: name.trim(),
-                            goal: goal.trim(),
-                            startDate: startDate || null,
-                            endDate: endDate || null,
-                        });
-                    }
-                } catch (err: any) {
-                    // Silently ignore if hub method doesn't exist - not critical for functionality
-                    const isMethodMissing = err?.message?.includes('does not exist') || 
-                                           err?.message?.includes('Method does not exist');
-                    if (!isMethodMissing) {
-                        console.warn('Failed to broadcast sprint update:', err);
-                    }
-                    // Continue anyway - broadcast is optional
-                }
-            }
-
-            // Notify related users if callback is provided
-            if (onNotifyChanges) {
-                const changes: string[] = [];
-                if (name.trim() !== effectiveSprint.sprintName) changes.push('sprint name');
-                if (goal.trim() !== (effectiveSprint.goal ?? '')) changes.push('sprint goal');
-                if (startDate !== (effectiveSprint.startDate ?? '')) changes.push('start date');
-                if (endDate !== (effectiveSprint.endDate ?? '')) changes.push('end date');
-                
-                if (changes.length > 0) {
-                    onNotifyChanges(
-                        `Sprint "${name.trim()}" has been updated. Changes: ${changes.join(', ')}`,
-                        _manageManagedBy ? [_manageManagedBy] : undefined
-                    );
+                if (onSave) {
+                    // New interface: use the callback
+                    await onSave(patch);
+                } else {
+                    // Direct API call: backend will handle notifications and SignalR broadcast
+                    await patchSprintApi(effectiveSprint.sprintID, {
+                        sprintName: patch.sprintName,
+                        goal: patch.goal,
+                        startDate: patch.startDate,
+                        endDate: patch.endDate,
+                        managedBy: patch.managedBy ?? null,
+                        teamID: patch.teamID ?? null,
+                    });
                 }
             }
 
@@ -1234,13 +1377,47 @@ export function ManageSprintModal({
                             <div className="msm-meta-row">
                                 <span className="msm-meta-label">Managed By</span>
                                 <span className="msm-meta-value">
-                                    {managedByName ?? (managedBy ? `User #${managedBy}` : 'Unassigned')}
+                                    {editing && canEditSprintMeta ? (
+                                        <div className="msm-meta-edit-row">
+                                            <span>{managedByName ?? (managedBy ? `User #${managedBy}` : 'Unassigned')}</span>
+                                            <button
+                                                type="button"
+                                                className="msm-meta-change-btn"
+                                                onClick={() => setShowManagerPicker(true)}
+                                                title={managedBy ? 'Change manager' : 'Add manager'}
+                                            >
+                                                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                                    <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                                                </svg>
+                                                {managedBy ? 'Change' : 'Assign'}
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        managedByName ?? (managedBy ? `User #${managedBy}` : 'Unassigned')
+                                    )}
                                 </span>
                             </div>
                             <div className="msm-meta-row">
                                 <span className="msm-meta-label">Team</span>
                                 <span className="msm-meta-value">
-                                    {teamName ?? (teamID ? `Team #${teamID}` : 'Unassigned')}
+                                    {editing && canEditSprintMeta ? (
+                                        <div className="msm-meta-edit-row">
+                                            <span>{teamName ?? (teamID ? `Team #${teamID}` : 'Unassigned')}</span>
+                                            <button
+                                                type="button"
+                                                className="msm-meta-change-btn"
+                                                onClick={() => setShowTeamPicker(true)}
+                                                title={teamID ? 'Change team' : 'Add team'}
+                                            >
+                                                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                                    <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                                                </svg>
+                                                {teamID ? 'Change' : 'Assign'}
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        teamName ?? (teamID ? `Team #${teamID}` : 'Unassigned')
+                                    )}
                                 </span>
                             </div>
                             <div className="msm-meta-row">
@@ -1261,7 +1438,7 @@ export function ManageSprintModal({
 
                     {/* Bottom: action buttons */}
                     <div className="msm-sidebar-footer">
-                        {userCanEdit && !editing && (
+                        {isElevatedWorkspaceRole(me) && !editing && (
                             <button type="button" className="msm-btn msm-btn--edit" onClick={beginEdit}>
                                 <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                                     <path d="M9.5 1.5l3 3L4 13H1v-3L9.5 1.5Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
@@ -1433,17 +1610,12 @@ export function ManageSprintModal({
                                         <th className="msm-th msm-th--status" scope="col">Status</th>
                                         <th className="msm-th msm-th--due" scope="col">Due Date</th>
                                         <th className="msm-th msm-th--assignee" scope="col">Assignee</th>
-                                        {userCanEdit && (
-                                            <th className="msm-th msm-th--actions" scope="col">
-                                                <span className="sr-only">Actions</span>
-                                            </th>
-                                        )}
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {filteredTree.length === 0 ? (
                                         <tr>
-                                            <td colSpan={userCanEdit ? 6 : 5} className="msm-no-results">
+                                            <td colSpan={5} className="msm-no-results">
                                                 No items match your filters.
                                             </td>
                                         </tr>
@@ -1461,6 +1633,7 @@ export function ManageSprintModal({
                                                 canManage={userCanEdit}
                                                 searchLower={searchLower}
                                                 users={userCanEdit ? users : undefined}
+                                                quickEditMode={quickEditMode}
                                             />
                                         ))
                                     )}
@@ -1474,15 +1647,24 @@ export function ManageSprintModal({
                         <div className="msm-main-footer">
                             <button
                                 type="button"
-                                className="msm-btn msm-btn--quick-edit"
-                                onClick={() => {
-                                    /* placeholder: open bulk edit mode */
-                                }}
+                                className={`msm-btn ${quickEditMode ? 'msm-btn--save' : 'msm-btn--quick-edit'}`}
+                                onClick={() => setQuickEditMode(v => !v)}
                             >
-                                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                                    <path d="M2 10h10M2 7h7M2 4h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                                </svg>
-                                Quick Edit Work Items
+                                {quickEditMode ? (
+                                    <>
+                                        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                            <path d="M2 7.5l3.5 3.5L12 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                        Done Editing
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                            <path d="M2 10h10M2 7h7M2 4h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                                        </svg>
+                                        Quick Edit Work Items
+                                    </>
+                                )}
                             </button>
                             {onAddWorkItem && (
                                 <button type="button" className="msm-btn msm-btn--add" onClick={onAddWorkItem}>
@@ -1496,6 +1678,38 @@ export function ManageSprintModal({
                     )}
                 </div>
             </div>
+
+            {/* Manager Picker Modal */}
+            {showManagerPicker && (
+                <PickerModal
+                    title="Change Sprint Manager"
+                    onClose={() => setShowManagerPicker(false)}
+                    onPick={(id, name) => {
+                        setManagedBy(id === 0 ? null : id);
+                        setManagedByName(id === 0 ? null : name);
+                        setShowManagerPicker(false);
+                    }}
+                    items={pickerUsers}
+                    loading={pickerLoading}
+                    preselectedId={managedBy}
+                />
+            )}
+
+            {/* Team Picker Modal */}
+            {showTeamPicker && (
+                <PickerModal
+                    title="Change Sprint Team"
+                    onClose={() => setShowTeamPicker(false)}
+                    onPick={(id, name) => {
+                        setTeamID(id === 0 ? null : id);
+                        setTeamName(id === 0 ? null : name);
+                        setShowTeamPicker(false);
+                    }}
+                    items={pickerTeams}
+                    loading={pickerLoading}
+                    preselectedId={teamID}
+                />
+            )}
         </div>
     );
 }

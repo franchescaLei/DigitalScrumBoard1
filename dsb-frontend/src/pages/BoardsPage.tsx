@@ -350,8 +350,8 @@ export default function BoardsPage() {
         if (sourceColumn === targetColumn) return;
 
         // Permission check
-        if (!canMoveWorkItem(user, item)) {
-            const reason = getMoveRestrictionReason(user, item) ?? 'You do not have permission to move this item.';
+        if (!canMoveWorkItem(user, item, boardData?.sprintManagerId)) {
+            const reason = getMoveRestrictionReason(user, item, boardData?.sprintManagerId) ?? 'You do not have permission to move this item.';
             setPermissionError(reason);
             window.setTimeout(() => setPermissionError(null), 4000);
             return;
@@ -597,8 +597,8 @@ export default function BoardsPage() {
 
     // ── Determine if a card is disabled for drag ──
     const isCardDraggingDisabled = useCallback((item: WorkItemBoardDto) => {
-        return !canMoveWorkItem(user, item);
-    }, [user]);
+        return !canMoveWorkItem(user, item, boardData?.sprintManagerId);
+    }, [user, boardData?.sprintManagerId]);
 
     // ─────────────────────────────────────────────
     // Render
@@ -831,8 +831,24 @@ export default function BoardsPage() {
                 item={detailItem}
                 onClose={() => setDetailItem(null)}
                 canManage={false}
-                canEdit={true}
-                currentUserId={user?.userID ?? null}
+                canEdit={user?.roleName === 'Administrator' || user?.roleName === 'Scrum Master' || user?.roleName === 'ScrumMaster'}
+                canChangeAssignee={
+                    user?.roleName === 'Administrator' || user?.roleName === 'Scrum Master' || user?.roleName === 'ScrumMaster' ||
+                    (boardData?.sprintManagerId != null && user?.userID === boardData.sprintManagerId)
+                }
+                currentUser={user ? { userID: user.userID, roleName: user.roleName } : null}
+                currentSprint={boardData ? {
+                    sprintID: boardData.sprintID,
+                    sprintName: boardData.sprintName,
+                    managedBy: boardData.sprintManagerId ?? null,
+                    managedByName: boardData.sprintManagerName ?? null,
+                    teamID: null,
+                    status: '',
+                    startDate: null,
+                    endDate: null,
+                    storyCount: 0,
+                    taskCount: 0,
+                } : null}
             />,
             document.body
         )}

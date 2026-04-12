@@ -17,6 +17,7 @@ export type WorkItemBoardDto = {
 export type BoardResponse = {
   sprintID: number;
   sprintName: string;
+  sprintManagerId?: number | null;
   sprintManagerName?: string | null;
   todo: WorkItemBoardDto[];
   ongoing: WorkItemBoardDto[];

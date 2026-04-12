@@ -408,8 +408,9 @@ export function ViewEpicModal({ epicId, onClose }: ViewEpicModalProps) {
                 item={detailItem}
                 onClose={() => setDetailItem(null)}
                 canManage={false}
-                canEdit={true}
-                currentUserId={user?.userID ?? null}
+                canEdit={user?.roleName === 'Administrator' || user?.roleName === 'Scrum Master' || user?.roleName === 'ScrumMaster'}
+                canChangeAssignee={user?.roleName === 'Administrator' || user?.roleName === 'Scrum Master' || user?.roleName === 'ScrumMaster'}
+                currentUser={user ? { userID: user.userID, roleName: user.roleName } : null}
             />,
             document.body
         )}

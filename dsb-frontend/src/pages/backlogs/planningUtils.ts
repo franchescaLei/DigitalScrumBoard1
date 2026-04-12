@@ -19,6 +19,67 @@ export function canManageSprint(me: UserProfile | null, sprint: SprintSummary) {
     return false;
 }
 
+/**
+ * Can edit sprint metadata (name, goal, dates, manager, team).
+ * Only Admin/Scrum Master can change the sprint's manager and team.
+ */
+export function canEditSprintMetadata(me: UserProfile | null, _sprint: SprintSummary) {
+    if (!me) return false;
+    return isElevatedWorkspaceRole(me);
+}
+
+/**
+ * Can change work item assignees within a sprint.
+ * Allowed for: Admin/Scrum Master, Sprint Manager, or the work item assignee.
+ */
+export function canChangeWorkItemAssignee(
+    me: UserProfile | null,
+    sprint: SprintSummary,
+    workItemAssignedTo: number | null
+) {
+    if (!me) return false;
+    if (isElevatedWorkspaceRole(me)) return true;
+    if (sprint.managedBy !== null && me.userID === sprint.managedBy) return true;
+    if (workItemAssignedTo !== null && me.userID === workItemAssignedTo) return true;
+    return false;
+}
+
+/**
+ * Can comment on a work item in the sprint.
+ * Allowed for: Admin/Scrum Master, Sprint Manager, or the work item assignee.
+ */
+export function canCommentOnWorkItem(
+    me: UserProfile | null,
+    sprint: SprintSummary | null,
+    workItemAssignedTo: number | null
+) {
+    if (!me) return false;
+    if (isElevatedWorkspaceRole(me)) return true;
+    if (sprint != null && sprint.managedBy !== null && me.userID === sprint.managedBy) return true;
+    if (workItemAssignedTo !== null && me.userID === workItemAssignedTo) return true;
+    return false;
+}
+
+/**
+ * Can start/stop a sprint.
+ * Allowed for: Admin/Scrum Master, Sprint Manager.
+ */
+export function canStartStopSprint(me: UserProfile | null, sprint: SprintSummary) {
+    if (!me) return false;
+    if (isElevatedWorkspaceRole(me)) return true;
+    if (sprint.managedBy !== null && me.userID === sprint.managedBy) return true;
+    return false;
+}
+
+/**
+ * Can delete a sprint.
+ * Only Admin/Scrum Master can delete.
+ */
+export function canDeleteSprint(me: UserProfile | null, _sprint: SprintSummary) {
+    if (!me) return false;
+    return isElevatedWorkspaceRole(me);
+}
+
 export function sprintManagerLabel(s: SprintSummary): string {
     const n = s.managedByName?.trim();
     if (n) return n;

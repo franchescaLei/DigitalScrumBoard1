@@ -6,6 +6,8 @@ public class BoardResponseDto
 
     public string SprintName { get; set; } = "";
 
+    public int? SprintManagerId { get; set; }
+
     public string? SprintManagerName { get; set; }
 
     public List<WorkItemBoardDto> Todo { get; set; } = new();

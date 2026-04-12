@@ -395,7 +395,208 @@
     word-break: break-word;
 }
 
-/* ── Sidebar footer buttons ───────────────────────────────────────────────── */
+/* Meta edit row with change button */
+.msm-meta-edit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.msm-meta-change-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(196, 147, 63, 0.12);
+    color: rgba(245, 240, 235, 0.85);
+    border: 1px solid rgba(196, 147, 63, 0.25);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    font-family: var(--font-ui);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.msm-meta-change-btn:hover {
+    background: rgba(196, 147, 63, 0.20);
+    border-color: rgba(196, 147, 63, 0.35);
+    color: rgba(245, 240, 235, 0.95);
+}
+
+.msm-meta-change-btn:active {
+    transform: scale(0.97);
+}
+
+.msm-meta-change-btn svg {
+    flex-shrink: 0;
+}
+
+
+/* ── Picker Modal (for manager/team selection) ────────────────────────────── */
+
+.msm-picker-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    background: rgba(10, 6, 4, 0.62);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: msmOverlayIn 0.15s ease both;
+}
+
+.msm-picker-modal {
+    width: 100%;
+    max-width: 400px;
+    max-height: 70dvh;
+    background: var(--form-bg);
+    border-radius: var(--radius-xl);
+    border: 1px solid rgba(196, 147, 63, 0.14);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38), 0 8px 24px rgba(0, 0, 0, 0.22);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: msmModalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.msm-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--divider);
+}
+
+.msm-picker-header h3 {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 400;
+    color: var(--brand-text);
+    margin: 0;
+}
+
+.msm-picker-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--divider);
+    background: transparent;
+    color: var(--form-text-muted);
+    cursor: pointer;
+    transition: all 0.14s ease;
+    font-size: 1.25rem;
+    line-height: 1;
+}
+
+.msm-picker-close:hover {
+    color: var(--form-text);
+    border-color: var(--accent-red);
+    background: var(--accent-red-light);
+}
+
+.msm-picker-search {
+    padding: 12px 20px 8px;
+}
+
+.msm-picker-input {
+    width: 100%;
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+    color: var(--form-text);
+    background: var(--form-input-bg);
+    border: 1px solid var(--form-border);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.msm-picker-input:focus {
+    border-color: var(--form-border-focus);
+    box-shadow: var(--shadow-input-focus);
+}
+
+.msm-picker-input::placeholder {
+    color: var(--form-text-placeholder);
+}
+
+.msm-picker-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 120px;
+    max-height: 300px;
+}
+
+.msm-picker-loading,
+.msm-picker-empty {
+    padding: 20px;
+    text-align: center;
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+    color: var(--form-text-muted);
+    font-style: italic;
+}
+
+.msm-picker-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.12s ease;
+}
+
+.msm-picker-item:hover {
+    background: rgba(196, 147, 63, 0.06);
+}
+
+.msm-picker-item--selected {
+    background: rgba(196, 147, 63, 0.10);
+    border-color: var(--accent-gold);
+}
+
+.msm-picker-item-name {
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--form-text);
+}
+
+.msm-picker-item-meta {
+    font-family: var(--font-ui);
+    font-size: 0.6875rem;
+    color: var(--form-text-muted);
+}
+
+.msm-picker-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 20px 16px;
+    border-top: 1px solid var(--divider);
+}
+
 
 .msm-sidebar-footer {
     margin-top: auto;
@@ -1291,131 +1492,83 @@
     border-color: rgba(220, 53, 69, 0.5);
 }
 
-/* ── Assignee Dropdown ────────────────────────────────────────────────────── */
+/* ── Assignee Inline ──────────────────────────────────────────────────────── */
 
-.msm-assignee-cell {
-    position: relative;
+.msm-wi-assignee-inline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
 }
 
-.msm-assignee-btn {
+.msm-wi-assignee-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+}
+
+.msm-wi-assignee-actions {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 8px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    color: inherit;
-    font-size: 0.8125rem;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    max-width: 140px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.msm-assignee-btn:hover {
-    background: rgba(196, 147, 63, 0.08);
-    border-color: rgba(196, 147, 63, 0.3);
-}
-
-.msm-assignee-btn svg {
     flex-shrink: 0;
-    opacity: 0.5;
 }
 
-.msm-assignee-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    z-index: 20;
-    margin-top: 4px;
-    background: var(--surface-card);
+.msm-wi-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 4px;
     border: 1px solid rgba(196, 147, 63, 0.2);
-    border-radius: var(--radius-md);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-    max-height: 240px;
-    overflow-y: auto;
-    min-width: 180px;
-    max-width: 250px;
-    animation: msmAssigneeMenuIn 0.2s ease both;
-}
-
-@keyframes msmAssigneeMenuIn {
-    from {
-        opacity: 0;
-        transform: translateY(-8px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.msm-assignee-option {
-    display: block;
-    width: 100%;
-    padding: 8px 12px;
-    background: transparent;
-    border: none;
-    text-align: left;
-    font-size: 0.8125rem;
-    color: var(--text-primary);
+    background: rgba(196, 147, 63, 0.08);
+    color: rgba(245, 240, 235, 0.7);
     cursor: pointer;
-    transition: background 0.15s ease;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    transition: all 0.14s ease;
 }
 
-.msm-assignee-option:hover {
-    background: rgba(196, 147, 63, 0.1);
+.msm-wi-icon-btn:hover {
+    background: rgba(196, 147, 63, 0.18);
+    border-color: rgba(196, 147, 63, 0.35);
+    color: rgba(245, 240, 235, 0.95);
 }
 
-.msm-assignee-option--selected {
-    font-weight: 600;
-    color: var(--brand-gold);
+.msm-wi-icon-btn:active {
+    transform: scale(0.93);
 }
 
-.msm-assignee-option--selected::before {
-    content: '✓ ';
+.msm-wi-icon-btn--danger {
+    border-color: rgba(220, 53, 69, 0.25);
+    background: rgba(220, 53, 69, 0.08);
+    color: rgba(245, 120, 120, 0.8);
+}
+
+.msm-wi-icon-btn--danger:hover {
+    background: rgba(220, 53, 69, 0.18);
+    border-color: rgba(220, 53, 69, 0.4);
+    color: rgba(245, 120, 120, 1);
 }
 
 /* ── Compact Table Columns ────────────────────────────────────────────────── */
 
-/* Make actions column narrower */
-.msm-th--actions,
-.msm-td--actions {
-    width: 50px;
-    min-width: 50px;
-    padding: 8px 4px !important;
-}
-
-.msm-wi-actions--compact {
-    gap: 2px;
-    justify-content: center;
-}
-
-.msm-wi-actions--compact .msm-wi-btn {
-    width: 24px;
-    height: 24px;
-    padding: 4px;
-}
-
-/* Reduce padding on other columns */
 .msm-th--type,
 .msm-td--type {
-    width: 80px;
-    min-width: 70px;
-    max-width: 90px;
+    width: 70px;
+    min-width: 60px;
+    max-width: 80px;
 }
 
 .msm-th--status,
 .msm-td--status {
-    width: 100px;
-    min-width: 90px;
-    max-width: 110px;
+    width: 90px;
+    min-width: 80px;
+    max-width: 100px;
 }
 
 .msm-th--due,
@@ -1427,9 +1580,9 @@
 
 .msm-th--assignee,
 .msm-td--assignee {
-    width: 140px;
-    min-width: 120px;
-    max-width: 160px;
+    width: 180px;
+    min-width: 150px;
+    max-width: 220px;
 }
 
 .msm-th--title {
