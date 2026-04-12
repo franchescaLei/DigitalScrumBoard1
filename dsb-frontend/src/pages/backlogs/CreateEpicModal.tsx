@@ -1,18 +1,110 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createWorkItem } from '../../api/workItemsApi';
+import { lookupUsers, lookupTeams, type UserLookup } from '../../api/lookupsApi';
 import { FieldError, TooltipIcon } from './modalPrimitives';
+import { useDebounced } from './useDebounced';
+
+const PRIORITIES = ['Low', 'Medium', 'High'] as const;
 
 export function CreateEpicModal({ onClose }: { onClose: () => void }) {
-    const [epicTitle, setEpicTitle] = useState('');
+    const [title, setTitle] = useState('');
     const [description, setDescription] = useState('');
+    const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>('Medium');
+    const [dueDate, setDueDate] = useState('');
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
 
+    const assigneePickedLabelRef = useRef('');
+    const teamPickedLabelRef = useRef('');
+    const comboRowRef = useRef<HTMLDivElement>(null);
+
+    const [assigneeInput, setAssigneeInput] = useState('');
+    const [assignedUserID, setAssignedUserID] = useState<number | null>(null);
+    const assigneeQueryDebounced = useDebounced(assigneeInput, 280);
+    const [assigneeRows, setAssigneeRows] = useState<UserLookup[]>([]);
+    const [assigneeLoading, setAssigneeLoading] = useState(false);
+    const [assigneeLookupError, setAssigneeLookupError] = useState('');
+    const [assigneeListOpen, setAssigneeListOpen] = useState(false);
+
+    const [teamInput, setTeamInput] = useState('');
+    const [teamID, setTeamID] = useState<number | null>(null);
+    const teamQueryDebounced = useDebounced(teamInput, 280);
+    const [teamRows, setTeamRows] = useState<{ teamID: number; teamName: string }[]>([]);
+    const [teamLoading, setTeamLoading] = useState(false);
+    const [teamLookupError, setTeamLookupError] = useState('');
+    const [teamListOpen, setTeamListOpen] = useState(false);
+
+    useEffect(() => {
+        if (!assigneeListOpen && !teamListOpen) return;
+        const onMouseDown = (e: MouseEvent) => {
+            const row = comboRowRef.current;
+            if (!row || row.contains(e.target as Node)) return;
+            setAssigneeListOpen(false);
+            setTeamListOpen(false);
+        };
+        document.addEventListener('mousedown', onMouseDown);
+        return () => document.removeEventListener('mousedown', onMouseDown);
+    }, [assigneeListOpen, teamListOpen]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setAssigneeLoading(true);
+        setAssigneeLookupError('');
+        void lookupUsers({ search: assigneeQueryDebounced, limit: 25 })
+            .then(rows => {
+                if (!cancelled) setAssigneeRows(rows);
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setAssigneeLookupError('Could not load users.');
+                    setAssigneeRows([]);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setAssigneeLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [assigneeQueryDebounced]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setTeamLoading(true);
+        setTeamLookupError('');
+        void lookupTeams({ search: teamQueryDebounced, limit: 25 })
+            .then(rows => {
+                if (!cancelled) setTeamRows(rows);
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setTeamLookupError('Could not load teams.');
+                    setTeamRows([]);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setTeamLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [teamQueryDebounced]);
+
     const validate = () => {
         const e: Record<string, string> = {};
-        if (!epicTitle.trim()) e.epicTitle = 'Epic title is required.';
-        else if (epicTitle.length > 100) e.epicTitle = 'Title must be 100 characters or fewer.';
-        if (description.length > 500) e.description = 'Description must be 500 characters or fewer.';
+        if (!title.trim()) e.title = 'Title is required.';
+        else if (title.length > 200) e.title = 'Title must be 200 characters or fewer.';
+
+        const desc = description.trim();
+        if (!desc) e.description = 'Description is required.';
+        else if (desc.length > 2000) e.description = 'Description must be 2000 characters or fewer.';
+
+        if (!dueDate) e.dueDate = 'Due date is required.';
+
+        if (!PRIORITIES.includes(priority as (typeof PRIORITIES)[number])) {
+            e.priority = 'Choose a valid priority.';
+        }
+
+        if (assignedUserID != null && !Number.isFinite(assignedUserID)) {
+            e.assignee = 'Choose a user from the list or clear the assignee field.';
+        }
+
         return e;
     };
 
@@ -20,15 +112,17 @@ export function CreateEpicModal({ onClose }: { onClose: () => void }) {
         const e = validate();
         setErrors(e);
         if (Object.keys(e).length > 0) return;
+
         setLoading(true);
         try {
-            const today = new Date().toISOString().split('T')[0];
             await createWorkItem({
                 type: 'Epic',
-                title: epicTitle.trim(),
+                title: title.trim(),
                 description: description.trim(),
-                priority: 'Medium',
-                dueDate: today,
+                priority,
+                teamID: teamID ?? null,
+                assignedUserID: assignedUserID ?? null,
+                dueDate,
             });
             onClose();
         } catch (err) {
@@ -38,9 +132,49 @@ export function CreateEpicModal({ onClose }: { onClose: () => void }) {
         }
     };
 
+    const pickAssignee = (u: UserLookup) => {
+        const name = (u.displayName ?? '').trim() || 'Member';
+        assigneePickedLabelRef.current = name;
+        setAssignedUserID(u.userID);
+        setAssigneeInput(name);
+        setAssigneeListOpen(false);
+        setErrors(prev => {
+            const next = { ...prev };
+            delete next.assignee;
+            return next;
+        });
+    };
+
+    const pickTeam = (t: { teamID: number; teamName: string }) => {
+        teamPickedLabelRef.current = (t.teamName ?? '').trim();
+        setTeamID(t.teamID);
+        setTeamInput(t.teamName);
+        setTeamListOpen(false);
+    };
+
+    const onAssigneeInputChange = (v: string) => {
+        setAssigneeInput(v);
+        if (assignedUserID != null && v.trim() !== assigneePickedLabelRef.current.trim()) {
+            setAssignedUserID(null);
+            assigneePickedLabelRef.current = '';
+        }
+    };
+
+    const onTeamInputChange = (v: string) => {
+        setTeamInput(v);
+        if (!v.trim()) {
+            setTeamID(null);
+            teamPickedLabelRef.current = '';
+            return;
+        }
+        if (teamID != null && v.trim() !== teamPickedLabelRef.current.trim()) {
+            setTeamID(null);
+        }
+    };
+
     return (
         <div className="bl-modal-overlay" role="dialog" aria-modal="true" aria-label="Create Epic" onClick={onClose}>
-            <div className="bl-modal" onClick={e => e.stopPropagation()}>
+            <div className="bl-modal bl-modal--wide" onClick={e => e.stopPropagation()}>
                 <div className="bl-modal-header">
                     <div>
                         <p className="bl-modal-eyebrow">New Epic</p>
@@ -57,38 +191,200 @@ export function CreateEpicModal({ onClose }: { onClose: () => void }) {
                     <div className="bl-field">
                         <div className="bl-field-label-row">
                             <label className="bl-field-label" htmlFor="ce-title">
-                                Epic Title <span className="bl-required">*</span>
+                                Title <span className="bl-required">*</span>
                             </label>
-                            <TooltipIcon text="A short, descriptive name for this epic. Epics group related stories and tasks." />
+                            <TooltipIcon text="A concise epic name (max 200 characters). Required by the server." />
                         </div>
                         <input
                             id="ce-title"
-                            className={`input${errors.epicTitle ? ' input--error' : ''}`}
+                            className={`input${errors.title ? ' input--error' : ''}`}
                             placeholder="e.g. Authentication & Access Control"
-                            value={epicTitle}
-                            maxLength={100}
+                            value={title}
+                            maxLength={200}
                             disabled={loading}
-                            onChange={e => setEpicTitle(e.target.value)}
+                            onChange={e => setTitle(e.target.value)}
                         />
-                        <FieldError message={errors.epicTitle} />
+                        <FieldError message={errors.title} />
                     </div>
 
                     <div className="bl-field">
                         <div className="bl-field-label-row">
-                            <label className="bl-field-label" htmlFor="ce-desc">Description</label>
-                            <TooltipIcon text="Describe the scope, goals, and success criteria for this epic." />
+                            <label className="bl-field-label" htmlFor="ce-desc">
+                                Description <span className="bl-required">*</span>
+                            </label>
+                            <TooltipIcon text="Context, goals, and acceptance criteria (required; max 2000 characters)." />
                         </div>
                         <textarea
                             id="ce-desc"
                             className={`input input--textarea${errors.description ? ' input--error' : ''}`}
-                            placeholder="What does this epic cover? What are the goals?"
+                            placeholder="What does this epic cover, including goals and success criteria…"
                             value={description}
-                            maxLength={500}
-                            rows={4}
+                            maxLength={2000}
+                            rows={3}
                             disabled={loading}
                             onChange={e => setDescription(e.target.value)}
                         />
                         <FieldError message={errors.description} />
+                    </div>
+
+                    <div className="bl-field-row">
+                        <div className="bl-field">
+                            <div className="bl-field-label-row">
+                                <label className="bl-field-label" htmlFor="ce-priority">
+                                    Priority <span className="bl-required">*</span>
+                                </label>
+                                <TooltipIcon text="Low, Medium, or High (server validation)." />
+                            </div>
+                            <select
+                                id="ce-priority"
+                                className={`select${errors.priority ? ' input--error' : ''}`}
+                                value={priority}
+                                disabled={loading}
+                                onChange={e => setPriority(e.target.value as (typeof PRIORITIES)[number])}
+                            >
+                                {PRIORITIES.map(p => (
+                                    <option key={p} value={p}>{p}</option>
+                                ))}
+                            </select>
+                            <FieldError message={errors.priority} />
+                        </div>
+                        <div className="bl-field">
+                            <div className="bl-field-label-row">
+                                <label className="bl-field-label" htmlFor="ce-due">
+                                    Due date <span className="bl-required">*</span>
+                                </label>
+                                <TooltipIcon text="When this epic is expected to be completed." />
+                            </div>
+                            <input
+                                id="ce-due"
+                                type="date"
+                                className={`input input--date${errors.dueDate ? ' input--error' : ''}`}
+                                value={dueDate}
+                                disabled={loading}
+                                onChange={e => setDueDate(e.target.value)}
+                            />
+                            <FieldError message={errors.dueDate} />
+                        </div>
+                    </div>
+
+                    <div ref={comboRowRef}>
+                        <div className="bl-field-row bl-field-row--combo" style={{ marginTop: 0 }}>
+                            <div className="bl-field bl-field--combo">
+                                <div className="bl-field-label-row">
+                                    <label className="bl-field-label" htmlFor="ce-assignee-combo">
+                                        Assignee <span className="bl-optional-label">(optional)</span>
+                                    </label>
+                                    <TooltipIcon text="Type to filter users, then pick from the list. Leave empty for no assignee." />
+                                </div>
+                                <div className={`bl-combo${assigneeListOpen ? ' bl-combo--open' : ''}`}>
+                                    <div className="bl-combo__field">
+                                        <input
+                                            id="ce-assignee-combo"
+                                            className={`input bl-combo__input${errors.assignee ? ' input--error' : ''}`}
+                                            placeholder="Search name or email…"
+                                            value={assigneeInput}
+                                            disabled={loading}
+                                            autoComplete="off"
+                                            role="combobox"
+                                            aria-expanded={assigneeListOpen}
+                                            aria-controls="ce-assignee-listbox"
+                                            aria-autocomplete="list"
+                                            onChange={e => onAssigneeInputChange(e.target.value)}
+                                            onFocus={() => setAssigneeListOpen(true)}
+                                        />
+                                        <span className="bl-combo__chevron" aria-hidden>
+                                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        </span>
+                                    </div>
+                                    {assigneeListOpen && (
+                                        <div id="ce-assignee-listbox" className="bl-combo-dropdown" role="listbox" aria-label="Assignees">
+                                            {assigneeLookupError && <div className="bl-combo-dropdown-msg bl-combo-dropdown-msg--error">{assigneeLookupError}</div>}
+                                            {assigneeLoading ? (
+                                                Array.from({ length: 3 }).map((_, i) => <div className="loading-skel bl-combo__skel" key={i} />)
+                                            ) : assigneeRows.length === 0 ? (
+                                                <div className="bl-combo-dropdown-msg">No matches.</div>
+                                            ) : (
+                                                assigneeRows.map(u => {
+                                                    const label = (u.displayName ?? '').trim() || 'Member';
+                                                    return (
+                                                        <button
+                                                            key={u.userID}
+                                                            type="button"
+                                                            role="option"
+                                                            className="bl-combo-option"
+                                                            onMouseDown={e => e.preventDefault()}
+                                                            onClick={() => pickAssignee(u)}
+                                                        >
+                                                            <span className="bl-combo-option__title">{label}</span>
+                                                            <span className="bl-combo-option__meta">{u.emailAddress || ''}</span>
+                                                        </button>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                <FieldError message={errors.assignee} />
+                            </div>
+
+                            <div className="bl-field bl-field--combo">
+                                <div className="bl-field-label-row">
+                                    <label className="bl-field-label" htmlFor="ce-team-combo">
+                                        Team <span className="bl-optional-label">(optional)</span>
+                                    </label>
+                                    <TooltipIcon text="Type to filter teams, then pick from the list. Leave empty for no team." />
+                                </div>
+                                <div className={`bl-combo${teamListOpen ? ' bl-combo--open' : ''}`}>
+                                    <div className="bl-combo__field">
+                                        <input
+                                            id="ce-team-combo"
+                                            className="input bl-combo__input"
+                                            placeholder="Search team name…"
+                                            value={teamInput}
+                                            disabled={loading}
+                                            autoComplete="off"
+                                            role="combobox"
+                                            aria-expanded={teamListOpen}
+                                            aria-controls="ce-team-listbox"
+                                            aria-autocomplete="list"
+                                            onChange={e => onTeamInputChange(e.target.value)}
+                                            onFocus={() => setTeamListOpen(true)}
+                                        />
+                                        <span className="bl-combo__chevron" aria-hidden>
+                                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        </span>
+                                    </div>
+                                    {teamListOpen && (
+                                        <div id="ce-team-listbox" className="bl-combo-dropdown" role="listbox" aria-label="Teams">
+                                            {teamLookupError && <div className="bl-combo-dropdown-msg bl-combo-dropdown-msg--error">{teamLookupError}</div>}
+                                            {teamLoading ? (
+                                                Array.from({ length: 3 }).map((_, i) => <div className="loading-skel bl-combo__skel" key={i} />)
+                                            ) : teamRows.length === 0 ? (
+                                                <div className="bl-combo-dropdown-msg">No matches.</div>
+                                            ) : (
+                                                teamRows.map(t => (
+                                                    <button
+                                                        key={t.teamID}
+                                                        type="button"
+                                                        role="option"
+                                                        className="bl-combo-option"
+                                                        onMouseDown={e => e.preventDefault()}
+                                                        onClick={() => pickTeam(t)}
+                                                    >
+                                                        <span className="bl-combo-option__title">{t.teamName}</span>
+                                                        <span className="bl-combo-option__meta">ID: {t.teamID}</span>
+                                                    </button>
+                                                ))
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

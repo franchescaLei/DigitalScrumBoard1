@@ -653,6 +653,9 @@ public sealed class WorkItemsController : ControllerBase
         if (sprint.Status == "Completed")
             return BadRequest(new { message = "Cannot assign a work item to a completed sprint." });
 
+        if (sprint.Status == "Active")
+            return BadRequest(new { message = "Cannot add work items to an active sprint. Stop the sprint first to add items." });
+
         if (!CanManageSprint(userId.Value, sprint.ManagedBy))
             return Forbid();
 
@@ -785,6 +788,9 @@ public sealed class WorkItemsController : ControllerBase
         var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
         if (sprint is null)
             return BadRequest(new { message = "Sprint not found." });
+
+        if (sprint.Status == "Active")
+            return BadRequest(new { message = "Cannot remove work items from an active sprint. Stop the sprint first to remove items." });
 
         if (!CanManageSprint(userId.Value, sprint.ManagedBy))
             return Forbid();

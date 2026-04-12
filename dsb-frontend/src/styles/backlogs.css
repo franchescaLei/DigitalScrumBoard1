@@ -9,7 +9,6 @@
     --col-bg: var(--form-surface);
     --page-title-color: var(--form-text);
     --page-sub-color: var(--form-text-muted);
-    /* Priority accent left-border colors */
     --priority-critical-border: #dc2626;
     --priority-critical-bg: rgba(220, 38, 38, 0.06);
     --priority-high-border: #ea580c;
@@ -20,7 +19,6 @@
     --priority-low-bg: rgba(22, 163, 74, 0.06);
     --priority-default-border: var(--card-border);
     --priority-default-bg: transparent;
-    /* Priority chip colors */
     --chip-critical-color: #dc2626;
     --chip-critical-bg: rgba(220, 38, 38, 0.10);
     --chip-high-color: #ea580c;
@@ -29,7 +27,6 @@
     --chip-medium-bg: rgba(202, 138, 4, 0.10);
     --chip-low-color: #16a34a;
     --chip-low-bg: rgba(22, 163, 74, 0.10);
-    /* Type dot colors */
     --dot-story: #6366f1;
     --dot-task: #06b6d4;
     --dot-other: #94a3b8;
@@ -73,7 +70,7 @@
     }
 
 /* ─────────────────────────────────────────────
-   PAGE HEADER (Planning Workspace)
+   PAGE HEADER
 ───────────────────────────────────────────── */
 
 .backlogs-page-header {
@@ -99,12 +96,11 @@
     min-width: 0;
 }
 
-.backlogs-page-header-content > div:last-child {
-    flex-shrink: 0;
-    padding-left: 8px;
-}
+    .backlogs-page-header-content > div:last-child {
+        flex-shrink: 0;
+        padding-left: 8px;
+    }
 
-/* Primary label for Planning Workspace — larger than eyebrow, fills header visual weight */
 .backlogs-page-heading {
     font-family: var(--font-ui);
     font-size: 1rem;
@@ -143,7 +139,6 @@
     line-height: 1.5;
 }
 
-/* Add Item button */
 .btn-add-item {
     display: inline-flex;
     align-items: center;
@@ -257,7 +252,6 @@
    WORKSPACE LAYOUT
 ───────────────────────────────────────────── */
 
-/* Epics span left column (full height); Sprints + Backlog share the right column at equal width */
 .backlogs-workspace {
     display: grid;
     grid-template-columns: minmax(232px, 288px) minmax(0, 1fr);
@@ -298,7 +292,6 @@
     overflow: hidden;
 }
 
-/* Sprints + Backlog panels fill the right-hand grid track */
 .backlogs-sprints.panel,
 .backlogs-backlog.panel {
     width: 100%;
@@ -424,7 +417,6 @@
     line-height: 1.2;
 }
 
-/* Section line: bold segment name + regular-weight description */
 .panel-title-line {
     display: flex;
     flex-wrap: wrap;
@@ -549,7 +541,7 @@
     }
 
 /* ─────────────────────────────────────────────
-   EPIC CARDS
+   EPIC CARDS — Refined
 ───────────────────────────────────────────── */
 
 .epic-card {
@@ -557,15 +549,27 @@
     border: 1px solid var(--card-border);
     border-left: 3px solid var(--accent-red);
     border-radius: var(--radius-md);
-    padding: 8px 10px 9px;
+    padding: 10px 12px 11px;
     cursor: pointer;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease, background 0.15s ease;
     outline: none;
+    position: relative;
+    overflow: hidden;
 }
 
+    .epic-card::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse 80% 40% at 100% 0%, rgba(196,147,63,0.04) 0%, transparent 70%);
+        pointer-events: none;
+    }
+
     .epic-card:hover {
-        box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-red) 18%, transparent);
+        box-shadow: 0 3px 12px color-mix(in srgb, var(--accent-red) 15%, transparent);
         transform: translateY(-1px);
+        border-color: color-mix(in srgb, var(--card-border) 30%, var(--accent-red) 70%);
+        background: color-mix(in srgb, var(--col-bg) 60%, var(--card-bg));
     }
 
     .epic-card:focus-visible {
@@ -582,18 +586,20 @@
     font-size: 0.8125rem;
     font-weight: 600;
     color: var(--page-title-color);
-    margin-bottom: 7px;
+    margin-bottom: 9px;
     line-height: 1.35;
+    position: relative;
 }
 
 .epic-card-progress {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 7px;
+    position: relative;
 }
 
 .epic-prog-bar {
-    height: 2px;
+    height: 3px;
     background: var(--divider);
     border-radius: 99px;
     overflow: hidden;
@@ -606,10 +612,8 @@
     transition: width 0.3s ease;
 }
 
-/* Epic story/task pills + .story-count-badge: backlogs-story-pills.css */
-
 /* ─────────────────────────────────────────────
-   SPRINT TABLE
+   SPRINT TABLE — Polished
 ───────────────────────────────────────────── */
 
 .sprint-table-head {
@@ -617,8 +621,8 @@
     grid-template-columns: minmax(0, 2fr) 0.5fr 0.5fr 1.25fr 0.55fr minmax(0, 1fr) 40px;
     gap: 8px;
     padding: 0 12px 8px;
-    border-bottom: 2px solid var(--card-border);
-    margin-bottom: 8px;
+    border-bottom: 1px solid var(--card-border);
+    margin-bottom: 6px;
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
@@ -626,29 +630,53 @@
 
 .sth-name, .sth-stories, .sth-tasks, .sth-duration, .sth-status, .sth-manager, .sth-actions {
     font-family: var(--font-ui);
-    font-size: 0.75rem;
+    font-size: 0.625rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.07em;
     text-transform: uppercase;
     color: var(--page-sub-color);
 }
 
+/* ── Sprint Row — polished card feel ─── */
 .sprint-table-row {
     border: 1px solid var(--card-border);
     border-radius: var(--radius-md);
-    margin-bottom: 6px;
+    margin-bottom: 5px;
     background: var(--col-bg);
     transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
     overflow: hidden;
+    position: relative;
 }
 
-    .sprint-table-row:hover {
-        border-color: color-mix(in srgb, var(--card-border) 50%, var(--accent-red) 50%);
+    .sprint-table-row::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: transparent;
+        transition: background 0.15s ease;
+        border-radius: 0;
     }
 
+    .sprint-table-row:hover {
+        border-color: color-mix(in srgb, var(--card-border) 40%, var(--accent-red) 60%);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+
+        .sprint-table-row:hover::before {
+            background: color-mix(in srgb, var(--accent-red) 40%, transparent);
+        }
+
 .sprint-table-row--expanded {
-    border-color: color-mix(in srgb, var(--card-border) 30%, var(--accent-red) 70%);
+    border-color: color-mix(in srgb, var(--card-border) 20%, var(--accent-red) 80%);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
 }
+
+    .sprint-table-row--expanded::before {
+        background: var(--accent-red);
+    }
 
 .sprint-table-row--menu-open {
     position: relative;
@@ -662,7 +690,6 @@
     justify-content: flex-end;
 }
 
-/* Portal-mounted sprint menu (team management picker styling + min width) */
 .sprint-portal-menu {
     min-width: 11.5rem;
     max-width: min(18rem, calc(100vw - 24px));
@@ -682,7 +709,7 @@
     display: grid;
     grid-template-columns: minmax(0, 2fr) 0.5fr 0.5fr 1.25fr 0.55fr minmax(0, 1fr) 40px;
     gap: 8px;
-    padding: 10px 12px;
+    padding: 10px 12px 10px 14px;
     align-items: center;
     width: 100%;
     min-width: 0;
@@ -697,21 +724,27 @@
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     transition: color 0.15s ease;
     outline: none;
 }
 
-    .str-name:hover, .str-name:focus-visible {
+    .str-name:hover,
+    .str-name:focus-visible {
         color: var(--accent-red);
     }
 
 .str-expand-icon {
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     color: var(--page-sub-color);
     width: 12px;
     flex-shrink: 0;
     line-height: 1;
+    transition: color 0.15s ease, transform 0.2s ease;
+}
+
+.sprint-table-row--expanded .str-expand-icon {
+    color: var(--accent-red);
 }
 
 .str-stories,
@@ -808,10 +841,10 @@
     justify-content: center;
 }
 
-/* Expanded sprint body */
+/* ── Expanded Sprint Body — polished ─── */
 .sprint-expanded-body {
     border-top: 1px solid var(--card-border);
-    padding: 10px 12px 12px;
+    padding: 0;
     background: var(--card-bg);
 }
 
@@ -819,63 +852,58 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    margin-top: 10px;
-    padding-top: 10px;
+    padding: 10px 14px 12px;
     border-top: 1px solid var(--card-border);
+    background: color-mix(in srgb, var(--col-bg) 60%, var(--card-bg));
 }
 
-/* Sprint work item rows (inside expanded) - OLD THICK VERSION */
-.sprint-wi-row {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px 10px;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius-sm);
-    margin-bottom: 5px;
-    background: var(--col-bg);
-    transition: border-color 0.15s ease;
-}
-
-    .sprint-wi-row:hover {
-        border-color: color-mix(in srgb, var(--card-border) 40%, var(--accent-red) 60%);
-    }
-
-.sprint-wi-row--child {
-    margin-left: 18px;
-    border-left: 2px solid var(--accent-red);
-}
-
-/* Sprint work item COMPACT rows (inside expanded) - NEW SINGLE ROW VERSION */
+/* ── Sprint Work Item Compact Rows — polished ─── */
 .sprint-wi-compact-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 12px;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius-sm);
-    background: var(--col-bg);
-    transition: border-color 0.12s ease, background 0.12s ease;
+    padding: 7px 14px;
+    background: transparent;
+    transition: background 0.1s ease;
     min-height: 36px;
+    border-bottom: 1px solid color-mix(in srgb, var(--card-border) 50%, transparent);
 }
 
+    .sprint-wi-compact-row:last-child {
+        border-bottom: none;
+    }
+
     .sprint-wi-compact-row:hover {
-        border-color: color-mix(in srgb, var(--card-border) 40%, var(--accent-red) 60%);
-        background: var(--form-surface);
+        background: color-mix(in srgb, var(--col-bg) 60%, transparent);
     }
 
 .sprint-wi-compact-row--child {
-    margin-left: 18px;
-    border: 1px solid var(--card-border);
-    border-left: 2px solid var(--accent-red);
-    padding-left: 10px;
+    padding-left: 32px;
+    background: color-mix(in srgb, var(--form-surface) 40%, transparent);
+    border-left: none;
+    position: relative;
 }
+
+    .sprint-wi-compact-row--child::before {
+        content: '';
+        position: absolute;
+        left: 18px;
+        top: 50%;
+        width: 8px;
+        height: 1px;
+        background: color-mix(in srgb, var(--accent-red) 35%, var(--divider));
+        pointer-events: none;
+    }
+
+    .sprint-wi-compact-row--child:hover {
+        background: color-mix(in srgb, var(--col-bg) 80%, transparent);
+    }
 
 .sprint-wi-compact-title {
     flex: 1;
     font-family: var(--font-ui);
     font-size: 0.8125rem;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--page-title-color);
     cursor: pointer;
     line-height: 1.3;
@@ -884,6 +912,7 @@
     text-overflow: ellipsis;
     outline: none;
     min-width: 0;
+    transition: color 0.12s ease;
 }
 
     .sprint-wi-compact-title:hover {
@@ -902,7 +931,7 @@
 
 .sprint-wi-compact-assignee {
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: var(--page-sub-color);
     white-space: nowrap;
     min-width: 60px;
@@ -913,29 +942,34 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 20px;
+    height: 20px;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--color-error);
-    font-size: 1.125rem;
+    font-size: 1rem;
     font-weight: 600;
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s ease, opacity 0.12s ease;
-    opacity: 0.7;
+    opacity: 0;
     padding: 0;
 }
 
-    .sprint-wi-remove-btn:hover {
-        opacity: 1;
-        background: var(--color-error-bg);
-    }
+.sprint-wi-compact-row:hover .sprint-wi-remove-btn {
+    opacity: 0.7;
+}
 
-    .sprint-wi-remove-btn:focus-visible {
-        box-shadow: 0 0 0 2px var(--color-error);
-    }
+.sprint-wi-remove-btn:hover {
+    opacity: 1 !important;
+    background: var(--color-error-bg);
+}
+
+.sprint-wi-remove-btn:focus-visible {
+    box-shadow: 0 0 0 2px var(--color-error);
+    opacity: 1;
+}
 
 .sprint-wi-main {
     display: flex;
@@ -958,7 +992,6 @@
     line-height: 1.4;
 }
 
-/* Badges container (Status + Priority) */
 .sprint-wi-badges {
     display: flex;
     align-items: center;
@@ -966,7 +999,6 @@
     flex-shrink: 0;
 }
 
-/* Actions area (Remove button) */
 .sprint-wi-actions {
     display: flex;
     align-items: center;
@@ -1033,7 +1065,7 @@
 }
 
 /* ─────────────────────────────────────────────
-   BACKLOG TABLE
+   BACKLOG TABLE — Refined
 ───────────────────────────────────────────── */
 
 .backlog-table-head {
@@ -1041,7 +1073,7 @@
     grid-template-columns: 3fr 0.8fr 0.9fr 1.1fr 1.4fr;
     gap: 8px;
     padding: 0 12px 8px;
-    border-bottom: 2px solid var(--card-border);
+    border-bottom: 1px solid var(--card-border);
     margin-bottom: 8px;
     width: 100%;
     min-width: 0;
@@ -1050,14 +1082,13 @@
 
 .bth-name, .bth-type, .bth-priority, .bth-status, .bth-duedate {
     font-family: var(--font-ui);
-    font-size: 0.75rem;
+    font-size: 0.625rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.07em;
     text-transform: uppercase;
     color: var(--page-sub-color);
 }
 
-/* Backlog item row — full row is draggable */
 .backlog-item-row {
     display: grid;
     grid-template-columns: 3fr 0.8fr 0.9fr 1.1fr 1.4fr;
@@ -1096,7 +1127,6 @@
     border-left-width: 2px;
 }
 
-/* Priority accent variants */
 .wi-accent--critical {
     border-left-color: var(--priority-critical-border) !important;
 }
@@ -1126,7 +1156,6 @@
     border-left: 2px solid var(--divider);
 }
 
-/* Backlog item cells */
 .bir-name {
     display: flex;
     align-items: center;
@@ -1156,7 +1185,6 @@
     color: var(--page-sub-color);
 }
 
-/* Type dot */
 .wi-dot {
     width: 7px;
     height: 7px;
@@ -1176,7 +1204,6 @@
     background: var(--dot-other);
 }
 
-/* Type chip */
 .wi-type-chip {
     display: inline-flex;
     align-items: center;
@@ -1191,27 +1218,15 @@
 }
 
 .wi-type-chip--story {
-    background: rgba(99, 102, 241, 0.10);
+    background: rgba(99,102,241,0.10);
     color: #6366f1;
-    border-color: rgba(99, 102, 241, 0.20);
-}
-
-[data-theme="dark"] .wi-type-chip--story {
-    background: rgba(129, 140, 248, 0.12);
-    color: #818cf8;
-    border-color: rgba(129, 140, 248, 0.22);
+    border-color: rgba(99,102,241,0.20);
 }
 
 .wi-type-chip--task {
-    background: rgba(6, 182, 212, 0.10);
+    background: rgba(6,182,212,0.10);
     color: #0891b2;
-    border-color: rgba(6, 182, 212, 0.20);
-}
-
-[data-theme="dark"] .wi-type-chip--task {
-    background: rgba(34, 211, 238, 0.10);
-    color: #22d3ee;
-    border-color: rgba(34, 211, 238, 0.20);
+    border-color: rgba(6,182,212,0.20);
 }
 
 .wi-type-chip--other {
@@ -1220,7 +1235,18 @@
     border-color: var(--card-border);
 }
 
-/* Priority chip */
+[data-theme="dark"] .wi-type-chip--story {
+    background: rgba(129,140,248,.12);
+    color: #818cf8;
+    border-color: rgba(129,140,248,.22);
+}
+
+[data-theme="dark"] .wi-type-chip--task {
+    background: rgba(34,211,238,.10);
+    color: #22d3ee;
+    border-color: rgba(34,211,238,.20);
+}
+
 .wi-priority-chip {
     display: inline-flex;
     align-items: center;
@@ -1257,7 +1283,6 @@
         color: var(--page-sub-color);
     }
 
-/* Status chip */
 .wi-status-chip {
     display: inline-flex;
     align-items: center;
@@ -1512,6 +1537,10 @@
     max-width: 640px;
 }
 
+.bl-modal--narrow {
+    max-width: 400px;
+}
+
 .bl-lookup-hint {
     font-size: 0.8125rem;
     color: var(--page-sub-color);
@@ -1571,10 +1600,6 @@
 
 .sprint-team-option .assignee-avatar {
     font-size: 0.75rem;
-}
-
-.bl-modal--narrow {
-    max-width: 400px;
 }
 
 .bl-modal-header {
@@ -1698,7 +1723,7 @@
 }
 
 /* ─────────────────────────────────────────────
-   CREATE SPRINT — COMBOBOX (manager / team)
+   COMBOBOX
 ───────────────────────────────────────────── */
 
 .bl-field-row--combo {
@@ -1758,7 +1783,7 @@
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: var(--radius-lg);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16), 0 2px 10px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.16), 0 2px 10px rgba(0,0,0,0.08);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
     animation: blFadeUp 0.18s var(--ease-out) both;
@@ -1800,12 +1825,11 @@
     transition: background 0.12s ease, color 0.12s ease;
 }
 
-.bl-combo-option:hover,
-.bl-combo-option:focus-visible {
-    outline: none;
-    background: var(--accent-red-light);
-    color: var(--accent-red);
-}
+    .bl-combo-option:hover, .bl-combo-option:focus-visible {
+        outline: none;
+        background: var(--accent-red-light);
+        color: var(--accent-red);
+    }
 
 .bl-combo-option__title {
     width: 100%;
@@ -1820,8 +1844,7 @@
     word-break: break-all;
 }
 
-.bl-combo-option:hover .bl-combo-option__meta,
-.bl-combo-option:focus-visible .bl-combo-option__meta {
+.bl-combo-option:hover .bl-combo-option__meta, .bl-combo-option:focus-visible .bl-combo-option__meta {
     color: var(--page-sub-color);
 }
 
@@ -2064,7 +2087,6 @@
     font-weight: 500;
 }
 
-/* Date inputs: stronger calendar affordance (WebKit/Blink) */
 .backlogs-page input[type="date"].input--date::-webkit-calendar-picker-indicator {
     cursor: pointer;
     opacity: 1;
@@ -2192,7 +2214,7 @@
 }
 
 /* ─────────────────────────────────────────────
-   CONFIRMATION MODAL (drag-to-sprint, batch remove)
+   CONFIRMATION MODAL
 ───────────────────────────────────────────── */
 
 .confirm-modal-card {
@@ -2222,10 +2244,10 @@
     margin: 0 0 20px;
 }
 
-.confirm-modal-message strong {
-    color: var(--form-text);
-    font-weight: 600;
-}
+    .confirm-modal-message strong {
+        color: var(--form-text);
+        font-weight: 600;
+    }
 
 .confirm-modal-actions {
     display: flex;
@@ -2235,46 +2257,46 @@
     border-top: 1px solid var(--form-border);
 }
 
-.confirm-modal-actions .btn {
-    min-width: 80px;
-    padding: 8px 18px;
-    border-radius: var(--radius-md);
-    font-family: var(--font-ui);
-    font-size: 0.8125rem;
-    font-weight: 600;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: all 0.14s ease;
-}
+    .confirm-modal-actions .btn {
+        min-width: 80px;
+        padding: 8px 18px;
+        border-radius: var(--radius-md);
+        font-family: var(--font-ui);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: all 0.14s ease;
+    }
 
-.confirm-modal-actions .btn-secondary {
-    background: var(--form-input-bg);
-    color: var(--form-text);
-    border-color: var(--form-border);
-}
+    .confirm-modal-actions .btn-secondary {
+        background: var(--form-input-bg);
+        color: var(--form-text);
+        border-color: var(--form-border);
+    }
 
-.confirm-modal-actions .btn-secondary:hover {
-    border-color: var(--form-text-muted);
-}
+        .confirm-modal-actions .btn-secondary:hover {
+            border-color: var(--form-text-muted);
+        }
 
-.confirm-modal-actions .btn-primary {
-    background: var(--accent-red);
-    color: #fff;
-    border-color: var(--accent-red);
-}
+    .confirm-modal-actions .btn-primary {
+        background: var(--accent-red);
+        color: #fff;
+        border-color: var(--accent-red);
+    }
 
-.confirm-modal-actions .btn-primary:hover {
-    background: var(--btn-primary-hover);
-    border-color: var(--btn-primary-hover);
-}
+        .confirm-modal-actions .btn-primary:hover {
+            background: var(--btn-primary-hover);
+            border-color: var(--btn-primary-hover);
+        }
 
-.confirm-modal-actions .btn-danger {
-    background: var(--accent-red);
-    color: #fff;
-    border-color: var(--accent-red);
-}
+    .confirm-modal-actions .btn-danger {
+        background: var(--accent-red);
+        color: #fff;
+        border-color: var(--accent-red);
+    }
 
-.confirm-modal-actions .btn-danger:hover {
-    background: var(--btn-primary-hover);
-    border-color: var(--btn-primary-hover);
-}
+        .confirm-modal-actions .btn-danger:hover {
+            background: var(--btn-primary-hover);
+            border-color: var(--btn-primary-hover);
+        }
