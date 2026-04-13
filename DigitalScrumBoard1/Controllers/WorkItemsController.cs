@@ -158,21 +158,45 @@ public sealed class WorkItemsController : ControllerBase
 
         await _repo.AddWithAuditAsync(item, audit, ct);
 
+        var creationNotifications = new List<Notification>();
+
         if (item.AssignedUserID.HasValue && item.AssignedUserID.Value != userId.Value)
         {
-            await _notifications.AddNotificationsAsync(new[]
+            creationNotifications.Add(new Notification
             {
-                new Notification
+                UserID = item.AssignedUserID.Value,
+                NotificationType = "WorkItemAssigned",
+                Message = $"You were assigned to work item '{item.Title}'.",
+                RelatedWorkItemID = item.WorkItemID,
+                CreatedAt = now,
+                IsRead = false
+            });
+        }
+
+        // ADDITIVE: Notify team members of new work item (excluding actor and assignee already notified)
+        if (item.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(item.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+            {
+                if (tm == userId.Value) continue;
+                if (item.AssignedUserID.HasValue && tm == item.AssignedUserID.Value) continue;
+                if (creationNotifications.Any(n => n.UserID == tm)) continue;
+
+                creationNotifications.Add(new Notification
                 {
-                    UserID = item.AssignedUserID.Value,
-                    NotificationType = "WorkItemAssigned",
-                    Message = $"You were assigned to work item '{item.Title}'.",
+                    UserID = tm,
+                    NotificationType = "WorkItemUpdated",
+                    Message = $"A new work item '{item.Title}' was created for your team.",
                     RelatedWorkItemID = item.WorkItemID,
                     CreatedAt = now,
                     IsRead = false
-                }
-            }, ct);
+                });
+            }
         }
+
+        if (creationNotifications.Count > 0)
+            await _notifications.AddNotificationsAsync(creationNotifications, ct);
 
         var resp = new WorkItemCreatedResponseDto
         {
@@ -256,15 +280,24 @@ public sealed class WorkItemsController : ControllerBase
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
-        // Authorization: Admin/SM, assignee, or Sprint Manager
-        var canComment = CanManageWorkItem(userId.Value, workItem.AssignedUserID);
+        // Authorization: Admin/SM, assignee, team member, Sprint Manager, or sprint team member
+        var canComment = CanManageWorkItemWithTeam(userId.Value, workItem.AssignedUserID, workItem.TeamID);
         if (!canComment && workItem.SprintID.HasValue)
         {
             var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
-            canComment = sprint is not null && CanManageSprint(userId.Value, sprint.ManagedBy);
+            if (sprint is not null)
+            {
+                canComment = CanManageSprint(userId.Value, sprint.ManagedBy);
+                // ADDITIVE: Sprint team members can comment on work items in their sprint
+                if (!canComment && sprint.TeamID.HasValue)
+                {
+                    var userTeamId = GetUserTeamId();
+                    canComment = userTeamId.HasValue && userTeamId.Value == sprint.TeamID.Value;
+                }
+            }
         }
         if (!canComment)
-            return StatusCode(403, new { message = "Only administrators, scrum masters, the sprint manager, or the work item's assignee can comment." });
+            return StatusCode(403, new { message = "Only administrators, scrum masters, the sprint manager, the work item's assignee, team members, or sprint team members can comment." });
 
         var text = req.CommentText.Trim();
         if (text.Length == 0)
@@ -284,7 +317,7 @@ public sealed class WorkItemsController : ControllerBase
 
         await _repo.AddCommentAsync(comment, ct);
 
-        // Only notify assignee and team members (not admins/sprint managers)
+        // Notify assignee, team members, and sprint team members (not admins/sprint managers)
         var notifyUserIds = new HashSet<int>();
         if (workItem.AssignedUserID.HasValue)
             notifyUserIds.Add(workItem.AssignedUserID.Value);
@@ -293,6 +326,17 @@ public sealed class WorkItemsController : ControllerBase
             var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
             foreach (var tm in teamMembers)
                 notifyUserIds.Add(tm);
+        }
+        // ADDITIVE: Notify sprint team members if work item is in a sprint with a team
+        if (workItem.SprintID.HasValue)
+        {
+            var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
+            if (sprint?.TeamID.HasValue == true)
+            {
+                var sprintTeamMembers = await _repo.GetUsersByTeamIdAsync(sprint.TeamID.Value, ct);
+                foreach (var stm in sprintTeamMembers)
+                    notifyUserIds.Add(stm);
+            }
         }
         notifyUserIds.Remove(userId.Value);
 
@@ -720,6 +764,50 @@ public sealed class WorkItemsController : ControllerBase
             }
         }
 
+        // ADDITIVE: Notify work item team members (excluding already notified users)
+        if (workItem.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+            {
+                if (tm == userId.Value) continue;
+                if (notifications.Any(n => n.UserID == tm)) continue;
+
+                notifications.Add(new Notification
+                {
+                    UserID = tm,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = req.SprintID,
+                    NotificationType = "WorkItemAssignedToSprint",
+                    Message = $"Work item '{workItem.Title}' was added to sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Notify sprint team members when items are added to their sprint
+        if (sprint.TeamID.HasValue)
+        {
+            var sprintTeamMembers = await _repo.GetUsersByTeamIdAsync(sprint.TeamID.Value, ct);
+            foreach (var stm in sprintTeamMembers)
+            {
+                if (stm == userId.Value) continue;
+                if (notifications.Any(n => n.UserID == stm)) continue;
+
+                notifications.Add(new Notification
+                {
+                    UserID = stm,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = req.SprintID,
+                    NotificationType = "WorkItemAssignedToSprint",
+                    Message = $"Work item '{workItem.Title}' was added to your sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
         // ── Send all notifications ──
         if (notifications.Count > 0)
         {
@@ -850,6 +938,50 @@ public sealed class WorkItemsController : ControllerBase
             }
         }
 
+        // ADDITIVE: Notify work item team members (excluding already notified users)
+        if (workItem.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+            {
+                if (tm == userId.Value) continue;
+                if (notifications.Any(n => n.UserID == tm)) continue;
+
+                notifications.Add(new Notification
+                {
+                    UserID = tm,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = oldSprintId.Value,
+                    NotificationType = "WorkItemRemovedFromSprint",
+                    Message = $"Work item '{workItem.Title}' was removed from sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Notify sprint team members when items are removed from their sprint
+        if (sprint.TeamID.HasValue)
+        {
+            var sprintTeamMembers = await _repo.GetUsersByTeamIdAsync(sprint.TeamID.Value, ct);
+            foreach (var stm in sprintTeamMembers)
+            {
+                if (stm == userId.Value) continue;
+                if (notifications.Any(n => n.UserID == stm)) continue;
+
+                notifications.Add(new Notification
+                {
+                    UserID = stm,
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = oldSprintId.Value,
+                    NotificationType = "WorkItemRemovedFromSprint",
+                    Message = $"Work item '{workItem.Title}' was removed from your sprint '{sprint.SprintName}'.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
         // ── Audit log ──
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         await _audit.LogAsync(
@@ -917,7 +1049,7 @@ public sealed class WorkItemsController : ControllerBase
         if (workItem is null)
             return NotFound(new { message = "Work item not found." });
 
-        if (!CanManageWorkItem(userId.Value, workItem.AssignedUserID))
+        if (!CanManageWorkItemWithTeam(userId.Value, workItem.AssignedUserID, workItem.TeamID))
         {
             if (!workItem.SprintID.HasValue)
                 return Forbid();
@@ -955,6 +1087,45 @@ public sealed class WorkItemsController : ControllerBase
             ip,
             ct
         );
+
+        // ADDITIVE: Notify team members of status change (excluding actor and assignee)
+        var statusChangeNotifications = new List<Notification>();
+        if (workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value != userId.Value)
+        {
+            statusChangeNotifications.Add(new Notification
+            {
+                UserID = workItem.AssignedUserID.Value,
+                NotificationType = "WorkItemStatusChanged",
+                Message = $"Work item '{workItem.Title}' status changed from '{oldStatus}' to '{newStatus}'.",
+                RelatedWorkItemID = workItem.WorkItemID,
+                RelatedSprintID = workItem.SprintID,
+                CreatedAt = DateTimeHelper.Now,
+                IsRead = false
+            });
+        }
+        if (workItem.TeamID.HasValue)
+        {
+            var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
+            foreach (var tm in teamMembers)
+            {
+                if (tm == userId.Value) continue;
+                if (workItem.AssignedUserID.HasValue && tm == workItem.AssignedUserID.Value) continue;
+                if (statusChangeNotifications.Any(n => n.UserID == tm)) continue;
+
+                statusChangeNotifications.Add(new Notification
+                {
+                    UserID = tm,
+                    NotificationType = "WorkItemStatusChanged",
+                    Message = $"Work item '{workItem.Title}' status changed from '{oldStatus}' to '{newStatus}'.",
+                    RelatedWorkItemID = workItem.WorkItemID,
+                    RelatedSprintID = workItem.SprintID,
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+        if (statusChangeNotifications.Count > 0)
+            await _notifications.AddNotificationsAsync(statusChangeNotifications, ct);
 
         // Broadcast status change to sprint group for real-time board update
         if (workItem.SprintID.HasValue)
@@ -1094,8 +1265,10 @@ public sealed class WorkItemsController : ControllerBase
         // ── Authorization: who can update? ──
         // 1. Admin/Scrum Master: full access (all fields)
         // 2. Sprint Manager: can change assignee only for items in their sprint
+        // 3. Team member: can change assignee only for items in their team (ADDITIVE)
         var isOwner = workItem.AssignedUserID.HasValue && workItem.AssignedUserID.Value == userId.Value;
-        if (!isElevated && !isSprintOwner)
+        var isTeamMember = workItem.TeamID.HasValue && GetUserTeamId() == workItem.TeamID.Value;
+        if (!isElevated && !isSprintOwner && !isTeamMember)
         {
             await _audit.LogAsync(
                 userId.Value,
@@ -1142,6 +1315,34 @@ public sealed class WorkItemsController : ControllerBase
                     ct);
 
                 return StatusCode(403, new { message = "Sprint managers can only change the assignee of work items. Administrators and scrum masters are required to edit other fields." });
+            }
+        }
+
+        // ── Field-level restrictions for Team Members ──
+        // Team members can ONLY change assignee — same restrictions as sprint managers
+        if (isTeamMember && !isElevated && !isSprintOwner)
+        {
+            var hasNonAssigneeChange =
+                req.Title is not null ||
+                req.Description is not null ||
+                req.Priority is not null ||
+                req.TeamID.HasValue ||
+                req.ParentWorkItemID.HasValue ||
+                req.DueDate is not null;
+
+            if (hasNonAssigneeChange)
+            {
+                await _audit.LogAsync(
+                    userId.Value,
+                    "WorkItem.Update",
+                    "WorkItem",
+                    workItem.WorkItemID,
+                    false,
+                    $"Unauthorized: team member attempted to edit non-assignee fields for WorkItemID={workItem.WorkItemID}",
+                    ip,
+                    ct);
+
+                return StatusCode(403, new { message = "Team members can only change the assignee of work items. Administrators and scrum masters are required to edit other fields." });
             }
         }
 
@@ -1344,7 +1545,7 @@ public sealed class WorkItemsController : ControllerBase
             }
         }
 
-        // If team changed, notify team members
+        // If team is set on the work item, notify all team members (ADDITIVE — always notify on any patch)
         if (workItem.TeamID.HasValue)
         {
             var teamMembers = await _repo.GetUsersByTeamIdAsync(workItem.TeamID.Value, ct);
@@ -1449,7 +1650,7 @@ public sealed class WorkItemsController : ControllerBase
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         int? sprintManagerId = null;
-        var canDelete = CanManageWorkItem(userId.Value, workItem.AssignedUserID);
+        var canDelete = CanManageWorkItemWithTeam(userId.Value, workItem.AssignedUserID, workItem.TeamID);
         if (!canDelete && workItem.SprintID.HasValue)
         {
             var sprint = await _repo.GetSprintByIdAsync(workItem.SprintID.Value, ct);
@@ -1566,6 +1767,32 @@ public sealed class WorkItemsController : ControllerBase
             return true;
 
         return assignedUserId.HasValue && assignedUserId.Value == userId;
+    }
+
+    /// <summary>
+    /// Extended check: returns true if user can manage the work item based on
+    /// existing rules (role / assignee) OR if they belong to the same team.
+    /// This is an ADDITIVE check — existing rules are not changed.
+    /// </summary>
+    private bool CanManageWorkItemWithTeam(int userId, int? assignedUserId, int? workItemTeamId)
+    {
+        // Existing rules first
+        if (CanManageWorkItem(userId, assignedUserId))
+            return true;
+
+        // ADDITIVE: team members can manage work items in their team
+        return workItemTeamId.HasValue && GetUserTeamId() == workItemTeamId.Value;
+    }
+
+    /// <summary>
+    /// Returns the TeamID of the currently authenticated user from their JWT claims.
+    /// Returns null if the claim is missing or invalid (user may not be on a team).
+    /// </summary>
+    private int? GetUserTeamId()
+    {
+        var teamClaim = User.FindFirst("TeamID");
+        if (teamClaim is null) return null;
+        return int.TryParse(teamClaim.Value, out var tid) ? tid : null;
     }
 
     private bool IsElevatedWorkItemRole()

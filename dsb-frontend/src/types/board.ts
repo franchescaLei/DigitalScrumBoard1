@@ -11,6 +11,7 @@ export type WorkItemBoardDto = {
   priority?: string | null;
   assignedUserID: number | null;
   assignedUserName?: string | null;
+  teamID?: number | null;
   commentCount: number;
 };
 
@@ -19,6 +20,8 @@ export type BoardResponse = {
   sprintName: string;
   sprintManagerId?: number | null;
   sprintManagerName?: string | null;
+  sprintTeamID?: number | null;
+  sprintTeamName?: string | null;
   todo: WorkItemBoardDto[];
   ongoing: WorkItemBoardDto[];
   forChecking: WorkItemBoardDto[];

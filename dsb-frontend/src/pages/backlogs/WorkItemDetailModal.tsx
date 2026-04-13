@@ -387,7 +387,7 @@ export function WorkItemDetailModal({
         if (!showUserPicker) return;
         let cancelled = false;
         setPickerUsersLoading(true);
-        void lookupUsers({ search: '', limit: 200 })
+        void lookupUsers({ search: '', teamId: item.teamID ?? undefined, limit: 200 })
             .then(users => {
                 if (!cancelled) setPickerUsers([
                     { id: 0, name: '— No Assignee —', meta: '' },
@@ -401,7 +401,7 @@ export function WorkItemDetailModal({
             .catch(() => { if (!cancelled) setPickerUsers([]); })
             .finally(() => { if (!cancelled) setPickerUsersLoading(false); });
         return () => { cancelled = true; };
-    }, [showUserPicker]);
+    }, [showUserPicker, item.teamID]);
 
     useEffect(() => {
         if (!showTeamPicker) return;

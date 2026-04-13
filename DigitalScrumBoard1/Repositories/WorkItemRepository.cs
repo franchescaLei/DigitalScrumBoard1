@@ -520,8 +520,18 @@ public sealed class WorkItemRepository : IWorkItemRepository
     {
         return await _db.Users
             .AsNoTracking()
-            .Where(u => u.TeamID == teamId)
+            .Where(u => u.TeamID == teamId && !u.Disabled)
             .Select(u => u.UserID)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<int>> GetActiveUserIdsForTeamAsync(int teamId, CancellationToken ct)
+    {
+        return await _db.Users
+            .AsNoTracking()
+            .Where(u => u.TeamID == teamId && !u.Disabled)
+            .Select(u => u.UserID)
+            .Distinct()
             .ToListAsync(ct);
     }
 

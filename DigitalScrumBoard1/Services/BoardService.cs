@@ -102,12 +102,19 @@ public class BoardService : IBoardService
         if (sprint.Manager is not null)
             sprintManagerName = $"{sprint.Manager.FirstName} {sprint.Manager.LastName}".Trim();
 
+        // Resolve sprint team info
+        string? sprintTeamName = null;
+        if (sprint.Team is not null)
+            sprintTeamName = sprint.Team.TeamName;
+
         return new BoardResponseDto
         {
             SprintID = sprint.SprintID,
             SprintName = sprint.SprintName,
             SprintManagerId = sprint.ManagedBy,
             SprintManagerName = sprintManagerName,
+            SprintTeamID = sprint.TeamID,
+            SprintTeamName = sprintTeamName,
             Todo = BuildColumn(filteredList, "To-do", normalizedSortBy, normalizedSortDirection),
             Ongoing = BuildColumn(filteredList, "Ongoing", normalizedSortBy, normalizedSortDirection),
             ForChecking = BuildColumn(filteredList, "For Checking", normalizedSortBy, normalizedSortDirection),
@@ -120,6 +127,7 @@ public class BoardService : IBoardService
         string newStatus,
         int userId,
         string role,
+        int? userTeamId,
         string ipAddress,
         CancellationToken ct)
     {
@@ -137,23 +145,29 @@ public class BoardService : IBoardService
         if (sprint is null)
             throw new InvalidOperationException("Sprint not found.");
 
-        // Authorization: Admin/Scrum Master, work item assignee, or Sprint Manager
+        // Authorization: Admin/Scrum Master, work item assignee, Sprint Manager, or sprint team member
         var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
             item.AssignedUserID == userId ||
-            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId);
+            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId) ||
+            (sprint.TeamID.HasValue && userTeamId.HasValue && sprint.TeamID.Value == userTeamId.Value);
 
         if (!allowed)
         {
+            var detail = $"role={role}; userId={userId}; userTeamId={userTeamId?.ToString() ?? "null"}; " +
+                         $"itemAssignedTo={item.AssignedUserID?.ToString() ?? "null"}; " +
+                         $"sprintManagedBy={sprint.ManagedBy?.ToString() ?? "null"}; " +
+                         $"sprintTeamId={sprint.TeamID?.ToString() ?? "null"}";
+
             await _audit.LogAsync(
                 userId,
                 "WorkItem.MoveBoardStatus",
                 "WorkItem",
                 item.WorkItemID,
                 false,
-                $"Unauthorized move attempt for WorkItemID={item.WorkItemID}; RequestedStatus={normalizedStatus}; SprintID={item.SprintID}",
+                $"Unauthorized move attempt for WorkItemID={item.WorkItemID}; RequestedStatus={normalizedStatus}; SprintID={item.SprintID}; Details: {detail}",
                 string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
                 ct
             );
@@ -342,6 +356,7 @@ public class BoardService : IBoardService
         int newPosition,
         int userId,
         string role,
+        int? userTeamId,
         string ipAddress,
         CancellationToken ct)
     {
@@ -361,13 +376,14 @@ public class BoardService : IBoardService
         if (sprint is null)
             throw new InvalidOperationException("Sprint not found.");
 
-        // Authorization: Admin/Scrum Master, work item assignee, or Sprint Manager
+        // Authorization: Admin/Scrum Master, work item assignee, Sprint Manager, or sprint team member
         var allowed =
             string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "ScrumMaster", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(role, "Scrum Master", StringComparison.OrdinalIgnoreCase) ||
             item.AssignedUserID == userId ||
-            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId);
+            (sprint.ManagedBy.HasValue && sprint.ManagedBy.Value == userId) ||
+            (sprint.TeamID.HasValue && userTeamId.HasValue && sprint.TeamID.Value == userTeamId.Value);
 
         if (!allowed)
         {
@@ -642,6 +658,7 @@ public class BoardService : IBoardService
             Priority = item.Priority,
             AssignedUserID = item.AssignedUserID,
             AssignedUserName = item.AssignedUser != null ? $"{item.AssignedUser.FirstName} {item.AssignedUser.LastName}".Trim() : null,
+            TeamID = item.TeamID,
             CommentCount = 0
         };
     }

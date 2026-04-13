@@ -26,6 +26,7 @@ public class BoardRepository : IBoardRepository
         return await _db.Sprints
             .AsNoTracking()
             .Include(s => s.Manager)
+            .Include(s => s.Team)
             .FirstOrDefaultAsync(s => s.SprintID == sprintId, ct);
     }
 

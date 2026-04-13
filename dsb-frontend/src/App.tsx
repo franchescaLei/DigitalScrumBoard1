@@ -9,6 +9,7 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 import EmailVerifiedPage from "./pages/EmailVerifiedPage";
+import EmailConfirmedPage from "./pages/EmailConfirmedPage";
 // App pages
 import BacklogsPage from "./pages/BacklogsPage";
 import BoardsPage from "./pages/BoardsPage";
@@ -28,6 +29,8 @@ export default function App() {
                         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                         <Route path="/change-password" element={<ChangePasswordPage />} />
                         <Route path="/verify-email" element={<VerifyEmailPage />} />
+                        {/* Email confirmed page - shows when user clicks email link, requires button click to verify */}
+                        <Route path="/email-confirmed" element={<EmailConfirmedPage />} />
                         {/* Email successfully verified confirmation page.
                             Shown after /verify-email completes successfully
                             and serves as the final onboarding transition point. */}

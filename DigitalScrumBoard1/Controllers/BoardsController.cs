@@ -87,6 +87,11 @@ public class BoardsController : ControllerBase
         if (string.IsNullOrWhiteSpace(role))
             return Unauthorized(new { message = "Missing user role." });
 
+        var teamClaim = User.FindFirst("TeamID");
+        int? userTeamId = null;
+        if (teamClaim is not null && int.TryParse(teamClaim.Value, out var tid))
+            userTeamId = tid;
+
         var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         try
@@ -96,6 +101,7 @@ public class BoardsController : ControllerBase
                 req.NewStatus,
                 userId,
                 role,
+                userTeamId,
                 ipAddress,
                 ct);
 
@@ -142,6 +148,11 @@ public class BoardsController : ControllerBase
         if (string.IsNullOrWhiteSpace(role))
             return Unauthorized(new { message = "Missing user role." });
 
+        var teamClaim = User.FindFirst("TeamID");
+        int? userTeamId = null;
+        if (teamClaim is not null && int.TryParse(teamClaim.Value, out var tid))
+            userTeamId = tid;
+
         var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         try
@@ -151,6 +162,7 @@ public class BoardsController : ControllerBase
                 req.NewPosition,
                 userId,
                 role,
+                userTeamId,
                 ipAddress,
                 ct);
 

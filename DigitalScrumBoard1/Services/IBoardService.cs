@@ -11,6 +11,7 @@ namespace DigitalScrumBoard1.Services
             string newStatus,
             int userId,
             string role,
+            int? userTeamId,
             string ipAddress,
             CancellationToken ct
         );
@@ -20,6 +21,7 @@ namespace DigitalScrumBoard1.Services
             int newPosition,
             int userId,
             string role,
+            int? userTeamId,
             string ipAddress,
             CancellationToken ct
         );

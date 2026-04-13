@@ -350,8 +350,8 @@ export default function BoardsPage() {
         if (sourceColumn === targetColumn) return;
 
         // Permission check
-        if (!canMoveWorkItem(user, item, boardData?.sprintManagerId)) {
-            const reason = getMoveRestrictionReason(user, item, boardData?.sprintManagerId) ?? 'You do not have permission to move this item.';
+        if (!canMoveWorkItem(user, item, boardData?.sprintManagerId, boardData?.sprintTeamID)) {
+            const reason = getMoveRestrictionReason(user, item, boardData?.sprintManagerId, boardData?.sprintTeamID) ?? 'You do not have permission to move this item.';
             setPermissionError(reason);
             window.setTimeout(() => setPermissionError(null), 4000);
             return;
@@ -597,8 +597,8 @@ export default function BoardsPage() {
 
     // ── Determine if a card is disabled for drag ──
     const isCardDraggingDisabled = useCallback((item: WorkItemBoardDto) => {
-        return !canMoveWorkItem(user, item, boardData?.sprintManagerId);
-    }, [user, boardData?.sprintManagerId]);
+        return !canMoveWorkItem(user, item, boardData?.sprintManagerId, boardData?.sprintTeamID);
+    }, [user, boardData?.sprintManagerId, boardData?.sprintTeamID]);
 
     // ─────────────────────────────────────────────
     // Render
@@ -619,6 +619,12 @@ export default function BoardsPage() {
                     {boardData && !boardLoading && (
                         <span className="boards-page-sub">
                             {boardData.sprintManagerName || 'No manager assigned'}
+                            {boardData.sprintTeamName && (
+                                <>
+                                    {' · '}
+                                    <span className="boards-page-sub-team">{boardData.sprintTeamName}</span>
+                                </>
+                            )}
                         </span>
                     )}
                 </div>

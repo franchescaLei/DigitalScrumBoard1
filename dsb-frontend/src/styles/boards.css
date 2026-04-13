@@ -77,6 +77,11 @@
     line-height: 1.4;
 }
 
+.boards-page-sub-team {
+    font-weight: 600;
+    color: var(--accent-color, #3B82F6);
+}
+
 /* Title row with nav buttons */
 .boards-title-row {
     display: flex;

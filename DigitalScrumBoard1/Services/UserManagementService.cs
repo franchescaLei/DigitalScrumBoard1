@@ -298,7 +298,17 @@ namespace DigitalScrumBoard1.Services
             _db.Users.Add(user);
             await _db.SaveChangesAsync(ct);
 
-            await _authEmail.SendWelcomeAndVerificationAsync(user, temporaryPassword, ct);
+            try
+            {
+                await _authEmail.SendWelcomeAndVerificationAsync(user, temporaryPassword, ct);
+            }
+            catch
+            {
+                // If email sending fails, remove the user record to maintain consistency
+                _db.Users.Remove(user);
+                await _db.SaveChangesAsync(ct);
+                throw;
+            }
 
             await _audit.LogAsync(
                 actorUserId,

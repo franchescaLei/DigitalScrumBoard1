@@ -148,6 +148,11 @@ namespace DigitalScrumBoard1.Controllers
                 new(ClaimTypes.Role, user.Role?.RoleName ?? user.RoleID.ToString())
             };
 
+            if (user.TeamID.HasValue)
+            {
+                claims.Add(new Claim("TeamID", user.TeamID.Value.ToString()));
+            }
+
             var identity = new ClaimsIdentity(claims, "MyCookieAuth");
             var principal = new ClaimsPrincipal(identity);
 
@@ -357,7 +362,7 @@ namespace DigitalScrumBoard1.Controllers
         public async Task<IActionResult> VerifyEmailAndRedirect([FromQuery] string token, CancellationToken ct)
         {
             var frontendUrl = (_configuration.GetValue<string>("Email:AppBaseUrl") ?? "http://192.168.19.18:7120").TrimEnd('/');
-            
+
             if (string.IsNullOrWhiteSpace(token))
                 return Redirect($"{frontendUrl}/verify-email?error=invalid_token");
 
@@ -365,7 +370,7 @@ namespace DigitalScrumBoard1.Controllers
 
             var row = await _db.EmailVerificationTokens
                 .Include(t => t.User)
-                .AsTracking()
+                .AsNoTracking()
                 .Where(t => t.TokenHash == tokenHash)
                 .OrderByDescending(t => t.CreatedAt)
                 .FirstOrDefaultAsync(ct);
@@ -379,18 +384,8 @@ namespace DigitalScrumBoard1.Controllers
             if (DateTimeHelper.Now > row.ExpiresAt)
                 return Redirect($"{frontendUrl}/verify-email?error=expired_token");
 
-            // Mark token as used and verify email
-            row.UsedAt = DateTimeHelper.Now;
-            row.User.EmailVerified = true;
-            row.User.UpdatedAt = DateTimeHelper.Now;
-
-            await _db.SaveChangesAsync(ct);
-
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            await _audit.LogAsync(row.User.UserID, "VERIFY_EMAIL", "User", row.User.UserID, true, "Email verified.", ip, ct);
-
-            // Redirect to the email verified success page
-            return Redirect($"{frontendUrl}/email-verified");
+            // Redirect to confirmation page with token - actual verification happens when user clicks button
+            return Redirect($"{frontendUrl}/email-confirmed?token={Uri.EscapeDataString(token)}");
         }
 
         [HttpPost("resend-verification")]
@@ -415,6 +410,43 @@ namespace DigitalScrumBoard1.Controllers
             await _audit.LogAsync(user.UserID, "SEND_VERIFY_EMAIL", "User", user.UserID, true, "Resent verification email.", ip, ct);
 
             return Ok(new { message = "Verification email sent." });
+        }
+
+        [HttpPost("confirm-email")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ConfirmEmail([FromBody] ConfirmEmailRequest req, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(req.Token))
+                return BadRequest(new { message = "Token is required." });
+
+            var tokenHash = EmailVerificationTokenFactory.HashToken(req.Token);
+
+            var row = await _db.EmailVerificationTokens
+                .Include(t => t.User)
+                .AsTracking()
+                .Where(t => t.TokenHash == tokenHash)
+                .OrderByDescending(t => t.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+                return BadRequest(new { message = "Invalid token." });
+
+            if (row.UsedAt is not null)
+                return BadRequest(new { message = "Token already used." });
+
+            if (DateTimeHelper.Now > row.ExpiresAt)
+                return BadRequest(new { message = "Token expired." });
+
+            row.UsedAt = DateTimeHelper.Now;
+            row.User.EmailVerified = true;
+            row.User.UpdatedAt = DateTimeHelper.Now;
+
+            await _db.SaveChangesAsync(ct);
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _audit.LogAsync(row.User.UserID, "VERIFY_EMAIL", "User", row.User.UserID, true, "Email verified.", ip, ct);
+
+            return Ok(new { message = "Email verified successfully." });
         }
 
         [HttpPost("forgot-password")]

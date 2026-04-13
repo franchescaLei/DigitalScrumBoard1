@@ -62,6 +62,10 @@ export const resendVerification = (): Promise<MessageResponse> =>
 export const verifyEmail = (token: string): Promise<MessageResponse> =>
     apiClient.get<MessageResponse>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`);
 
+/** POST /api/auth/confirm-email — verifies email when user clicks confirm button */
+export const confirmEmail = (token: string): Promise<MessageResponse> =>
+    apiClient.post<MessageResponse>('/api/auth/confirm-email', { token });
+
 // ── Password reset flow ───────────────────────
 
 /** POST /api/auth/forgot-password */

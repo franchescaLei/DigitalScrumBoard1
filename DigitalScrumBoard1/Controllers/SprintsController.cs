@@ -381,20 +381,46 @@ public sealed class SprintsController : ControllerBase
         }
 
         var assignedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
+        var notificationSet = new HashSet<int>();
         var notifications = new List<Notification>();
 
         // Notify users with work items in this sprint
         foreach (var assignedUserId in assignedUserIds)
         {
-            notifications.Add(new Notification
+            if (notificationSet.Add(assignedUserId))
             {
-                UserID = assignedUserId,
-                RelatedSprintID = id,
-                NotificationType = "SprintUpdated",
-                Message = $"Sprint '{sprint.SprintName}' has been updated.",
-                CreatedAt = DateTimeHelper.Now,
-                IsRead = false
-            });
+                notifications.Add(new Notification
+                {
+                    UserID = assignedUserId,
+                    RelatedSprintID = id,
+                    NotificationType = "SprintUpdated",
+                    Message = $"Sprint '{sprint.SprintName}' has been updated.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Notify team members if sprint has a team
+        if (sprint.TeamID.HasValue)
+        {
+            var teamUserIds = await _repo.GetActiveUserIdsForTeamAsync(sprint.TeamID.Value, ct);
+            foreach (var teamMemberId in teamUserIds)
+            {
+                if (teamMemberId == userId.Value) continue;
+                if (notificationSet.Add(teamMemberId))
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = teamMemberId,
+                        RelatedSprintID = id,
+                        NotificationType = "SprintUpdated",
+                        Message = $"Sprint '{sprint.SprintName}' has been updated for your team.",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
         }
 
         // Notify old and new manager when ManagedBy changes
@@ -553,15 +579,46 @@ public sealed class SprintsController : ControllerBase
         );
 
         var assignedUserIds = await _repo.GetSprintAssignedUserIdsAsync(id, ct);
-        var notifications = assignedUserIds.Select(assignedUserId => new Notification
+        var notificationSet = new HashSet<int>();
+        var notifications = new List<Notification>();
+
+        foreach (var assignedUserId in assignedUserIds)
         {
-            UserID = assignedUserId,
-            RelatedSprintID = id,
-            NotificationType = "SprintStarted",
-            Message = $"Sprint '{sprint.SprintName}' has started.",
-            CreatedAt = DateTimeHelper.Now,
-            IsRead = false
-        }).ToList();
+            if (notificationSet.Add(assignedUserId))
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = assignedUserId,
+                    RelatedSprintID = id,
+                    NotificationType = "SprintStarted",
+                    Message = $"Sprint '{sprint.SprintName}' has started.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Also notify all active team members if sprint has a team
+        if (sprint.TeamID.HasValue)
+        {
+            var teamUserIds = await _repo.GetActiveUserIdsForTeamAsync(sprint.TeamID.Value, ct);
+            foreach (var teamMemberId in teamUserIds)
+            {
+                if (teamMemberId == userId.Value) continue;
+                if (notificationSet.Add(teamMemberId))
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = teamMemberId,
+                        RelatedSprintID = id,
+                        NotificationType = "SprintStarted",
+                        Message = $"Sprint '{sprint.SprintName}' has started for your team.",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
+        }
 
         if (notifications.Count > 0)
             await _notifications.AddNotificationsAsync(notifications, ct);
@@ -650,15 +707,46 @@ public sealed class SprintsController : ControllerBase
             .Distinct()
             .ToList();
 
-        var notifications = affectedUserIds.Select(assignedUserId => new Notification
+        var notificationSet = new HashSet<int>();
+        var notifications = new List<Notification>();
+
+        foreach (var assignedUserId in affectedUserIds)
         {
-            UserID = assignedUserId,
-            RelatedSprintID = id,
-            NotificationType = "SprintStopped",
-            Message = $"Sprint '{sprint.SprintName}' has been stopped.",
-            CreatedAt = DateTimeHelper.Now,
-            IsRead = false
-        }).ToList();
+            if (notificationSet.Add(assignedUserId))
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = assignedUserId,
+                    RelatedSprintID = id,
+                    NotificationType = "SprintStopped",
+                    Message = $"Sprint '{sprint.SprintName}' has been stopped.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Also notify all active team members if sprint has a team
+        if (sprint.TeamID.HasValue)
+        {
+            var teamUserIds = await _repo.GetActiveUserIdsForTeamAsync(sprint.TeamID.Value, ct);
+            foreach (var teamMemberId in teamUserIds)
+            {
+                if (teamMemberId == userId.Value) continue;
+                if (notificationSet.Add(teamMemberId))
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = teamMemberId,
+                        RelatedSprintID = id,
+                        NotificationType = "SprintStopped",
+                        Message = $"Sprint '{sprint.SprintName}' has been stopped for your team.",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
+        }
 
         if (notifications.Count > 0)
             await _notifications.AddNotificationsAsync(notifications, ct);
@@ -753,17 +841,50 @@ public sealed class SprintsController : ControllerBase
             ct
         );
 
-        var notifications = affectedUserIds.Select(assignedUserId => new Notification
+        var notifications = new List<Notification>();
+        var notificationSet = new HashSet<int>();
+
+        foreach (var assignedUserId in affectedUserIds)
         {
-            UserID = assignedUserId,
-            RelatedSprintID = null,
-            NotificationType = "SprintCompleted",
-            Message = unfinishedCount > 0
-                ? $"Sprint '{sprintName}' has been completed. {unfinishedCount} unfinished work item(s) were returned to backlog."
-                : $"Sprint '{sprintName}' has been completed.",
-            CreatedAt = DateTimeHelper.Now,
-            IsRead = false
-        }).ToList();
+            if (notificationSet.Add(assignedUserId))
+            {
+                notifications.Add(new Notification
+                {
+                    UserID = assignedUserId,
+                    RelatedSprintID = null,
+                    NotificationType = "SprintCompleted",
+                    Message = unfinishedCount > 0
+                        ? $"Sprint '{sprintName}' has been completed. {unfinishedCount} unfinished work item(s) were returned to backlog."
+                        : $"Sprint '{sprintName}' has been completed.",
+                    CreatedAt = DateTimeHelper.Now,
+                    IsRead = false
+                });
+            }
+        }
+
+        // ADDITIVE: Also notify all active team members if sprint has a team
+        if (sprint.TeamID.HasValue)
+        {
+            var teamUserIds = await _repo.GetActiveUserIdsForTeamAsync(sprint.TeamID.Value, ct);
+            foreach (var teamMemberId in teamUserIds)
+            {
+                if (teamMemberId == userId.Value) continue;
+                if (notificationSet.Add(teamMemberId))
+                {
+                    notifications.Add(new Notification
+                    {
+                        UserID = teamMemberId,
+                        RelatedSprintID = null,
+                        NotificationType = "SprintCompleted",
+                        Message = unfinishedCount > 0
+                            ? $"Sprint '{sprintName}' has been completed for your team. {unfinishedCount} unfinished work item(s) were returned to backlog."
+                            : $"Sprint '{sprintName}' has been completed for your team.",
+                        CreatedAt = DateTimeHelper.Now,
+                        IsRead = false
+                    });
+                }
+            }
+        }
 
         if (notifications.Count > 0)
             await _notifications.AddNotificationsAsync(notifications, ct);

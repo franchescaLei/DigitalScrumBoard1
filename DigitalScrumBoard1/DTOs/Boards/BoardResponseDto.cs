@@ -10,6 +10,10 @@ public class BoardResponseDto
 
     public string? SprintManagerName { get; set; }
 
+    public int? SprintTeamID { get; set; }
+
+    public string? SprintTeamName { get; set; }
+
     public List<WorkItemBoardDto> Todo { get; set; } = new();
 
     public List<WorkItemBoardDto> Ongoing { get; set; } = new();
@@ -34,6 +38,8 @@ public class WorkItemBoardDto
     public int? AssignedUserID { get; set; }
 
     public string? AssignedUserName { get; set; }
+
+    public int? TeamID { get; set; }
 
     public int CommentCount { get; set; }
 }

@@ -50,6 +50,9 @@ public interface IWorkItemRepository
     Task<WorkItemComment?> GetCommentByIdAsync(int commentId, CancellationToken ct);
     Task<List<int>> GetUsersByTeamIdAsync(int teamId, CancellationToken ct);
 
+    /// <summary>Active (non-disabled) users assigned to the team.</summary>
+    Task<List<int>> GetActiveUserIdsForTeamAsync(int teamId, CancellationToken ct);
+
     Task AddCommentAsync(WorkItemComment comment, CancellationToken ct);
 
     Task<List<EpicTileDto>> GetEpicTilesFilteredAsync(
