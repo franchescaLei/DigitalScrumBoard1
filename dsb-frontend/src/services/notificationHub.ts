@@ -1,6 +1,7 @@
 import * as signalR from "@microsoft/signalr";
 
-const NOTIFICATION_HUB_URL = "https://localhost:7127/hubs/notifications";
+const API_BASE = import.meta.env.VITE_API_URL || 'http://192.168.19.18:7127';
+const NOTIFICATION_HUB_URL = `${API_BASE}/hubs/notifications`;
 
 let notificationConnection: signalR.HubConnection | null = null;
 

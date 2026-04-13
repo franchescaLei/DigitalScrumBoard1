@@ -28,8 +28,8 @@ builder.Services.AddAuthentication("MyCookieAuth")
     {
         options.Cookie.Name = "DigitalScrumBoardAuth";
         options.Cookie.HttpOnly = true;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-        options.Cookie.SameSite = SameSiteMode.None;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.Cookie.SameSite = SameSiteMode.Lax;
         options.Cookie.IsEssential = true;
 
         options.LoginPath = "/api/auth/login";
@@ -93,12 +93,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("DSB", policy =>
         policy.WithOrigins(
-                "https://localhost:7120",
-                "https://localhost:5001",
-                "https://localhost:5000",
-                "http://localhost:5001",
-                "http://localhost:5000",
-                "http://localhost:5206"
+                "http://192.168.19.18:7120"
             )
               .AllowAnyHeader()
               .AllowAnyMethod()

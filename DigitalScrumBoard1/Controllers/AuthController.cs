@@ -356,7 +356,7 @@ namespace DigitalScrumBoard1.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> VerifyEmailAndRedirect([FromQuery] string token, CancellationToken ct)
         {
-            var frontendUrl = (_configuration.GetValue<string>("Email:AppBaseUrl") ?? "http://localhost:7120").TrimEnd('/');
+            var frontendUrl = (_configuration.GetValue<string>("Email:AppBaseUrl") ?? "http://192.168.19.18:7120").TrimEnd('/');
             
             if (string.IsNullOrWhiteSpace(token))
                 return Redirect($"{frontendUrl}/verify-email?error=invalid_token");

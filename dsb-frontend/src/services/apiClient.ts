@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────
 // API CLIENT
-// Backend: https://localhost:7127
+// Backend: configurable via import.meta.env.VITE_API_URL or defaults to http://192.168.19.18:7127
 // Auth: HttpOnly cookie (DigitalScrumBoardAuth)
 // Credentials must always be included
 // ─────────────────────────────────────────────
 
-export const API_BASE_URL = 'https://localhost:7127';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://192.168.19.18:7127';
 const BASE_URL = API_BASE_URL;
 
 // ── Typed API error ───────────────────────────
